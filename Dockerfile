@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     procps \
     coreutils \
     ca-certificates \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create necessary directories
@@ -34,6 +35,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Run as root (required for monitoring capabilities)
 USER root
+
+# Set CA certificate paths for Go
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_DIR=/etc/ssl/certs
 
 WORKDIR /var/lib/fogbot
 

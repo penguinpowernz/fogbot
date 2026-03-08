@@ -73,14 +73,17 @@ Configuration via environment variables:
 
 ✅ Core infrastructure implemented:
 - Project scaffold and package structure
-- Skill system with 17 prebuilt skills
+- Skill system with 17 prebuilt skills (100-900 series)
 - Configuration management with SIGHUP reload
 - Notifier interface with Telegram implementation
 - TOFU authentication with challenge-response
-- Deduplication and rate limiting
-- Drop-in file management with ledger
+- Improved auth flow: `/start` generates code on-demand, scans any message for code
+- Command handlers: `/start`, `/help` (context-aware), `/reset` (deauthorize)
+- SALUTE-formatted alerts (🔴 CONTACT, 🟡 MOVEMENT, 🟢 NOMINAL)
+- Deduplication and rate limiting (10 auth/60s, 3 unauth lifetime)
+- Drop-in file management with SHA256 ledger
 - CLI with skill management commands
-- Docker Compose test environment
+- Docker Compose test environment with proper capabilities
 - Dry-run mode for system modifications
 
 ## License

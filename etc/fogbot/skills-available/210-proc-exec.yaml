@@ -1,0 +1,20 @@
+id: 210
+name: proc-exec
+description: >
+  Polls /proc for suspicious execution patterns: executables running from
+  /tmp or /dev/shm, process hiding (PID in /proc but not in ps output).
+why: >
+  Legitimate software doesn't run from /tmp or /dev/shm. These are
+  staging areas for droppers and in-memory malware. Process hiding
+  indicates rootkit presence.
+requires:
+  - /proc
+tags: [process, execution, rootkit]
+severity_default: red
+config:
+  poll_interval: 30s
+  suspicious_paths:
+    - /tmp
+    - /dev/shm
+    - /run
+  check_process_hiding: true

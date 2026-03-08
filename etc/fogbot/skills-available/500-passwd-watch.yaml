@@ -1,0 +1,26 @@
+id: 500
+name: passwd-watch
+description: >
+  Uses auditd to watch critical system files: /etc/passwd, /etc/shadow,
+  /etc/sudoers, SSH configs, PAM configs. Alerts on any access.
+why: >
+  These files control system access and authentication. Any unexpected
+  modification is a critical security event. Even reads can indicate
+  reconnaissance.
+requires:
+  - auditd
+  - root
+tags: [file-integrity, auth, auditd]
+severity_default: red
+config:
+  watch_paths:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/sudoers
+    - /etc/sudoers.d
+    - /etc/ssh/sshd_config
+    - /etc/pam.d
+  alert_on_read: false
+  alert_on_write: true
+  alert_on_execute: true
+  alert_on_attribute: true

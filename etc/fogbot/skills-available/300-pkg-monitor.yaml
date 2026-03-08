@@ -1,0 +1,17 @@
+id: 300
+name: pkg-monitor
+description: >
+  Tails /var/log/dpkg.log for package install, remove, and upgrade events.
+why: >
+  Unexpected package installations can indicate compromise. An attacker
+  installing tools, backdooring existing packages, or removing security
+  software leaves traces in package manager logs.
+requires:
+  - dpkg.log
+tags: [packages, system-changes]
+severity_default: yellow
+config:
+  log_path: /var/log/dpkg.log
+  alert_on_install: true
+  alert_on_remove: true
+  alert_on_upgrade: false

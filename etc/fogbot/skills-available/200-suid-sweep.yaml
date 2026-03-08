@@ -1,0 +1,26 @@
+id: 200
+name: suid-sweep
+description: >
+  Dual detection: auditd watches for chmod syscalls setting SUID/SGID bits
+  (immediate alerts) plus periodic filesystem sweep comparing against
+  approved baseline.
+why: >
+  SUID binaries run with elevated privileges. An attacker who can create
+  or modify a SUID binary has a direct path to privilege escalation.
+  New SUID binaries appearing on a production system — especially outside
+  package manager control — are a critical indicator.
+requires:
+  - auditd
+  - root
+tags: [permissions, suid, privilege-escalation]
+severity_default: red
+config:
+  sweep_interval: 1h
+  baseline_file: /var/lib/fogbot/suid_baseline.json
+  watch_paths:
+    - /bin
+    - /sbin
+    - /usr/bin
+    - /usr/sbin
+    - /usr/local/bin
+    - /usr/local/sbin

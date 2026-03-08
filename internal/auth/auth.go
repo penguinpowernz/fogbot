@@ -32,6 +32,7 @@ type State struct {
 	Code           string    `json:"-"` // never persisted
 	CodeUsed       bool      `json:"code_used"`
 	path           string
+	pendingAuth    map[string]time.Time // chats waiting for auth code
 }
 
 // RateLimiter tracks message rates from chat IDs
@@ -52,7 +53,8 @@ type rateBucket struct {
 // NewState creates or loads auth state
 func NewState(path string) (*State, error) {
 	state := &State{
-		path: path,
+		path:        path,
+		pendingAuth: make(map[string]time.Time),
 	}
 
 	// Try to load existing state
@@ -63,11 +65,7 @@ func NewState(path string) (*State, error) {
 		// File doesn't exist, will be created on first save
 	}
 
-	// Generate new code if no authorized chat exists
-	if state.AuthorizedChat == "" && !state.CodeUsed {
-		state.Code = generateCode()
-	}
-
+	// Code will be generated when /start is called
 	return state, nil
 }
 
@@ -145,6 +143,49 @@ func (s *State) VerifyCode(code string) bool {
 	}
 
 	return s.Code == code
+}
+
+// MarkPendingAuth marks a chat as waiting for auth code (after /start)
+func (s *State) MarkPendingAuth(chatID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingAuth[chatID] = time.Now()
+}
+
+// IsPendingAuth checks if a chat is waiting for auth code
+func (s *State) IsPendingAuth(chatID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, pending := s.pendingAuth[chatID]
+	return pending
+}
+
+// ClearPendingAuth removes a chat from pending auth list
+func (s *State) ClearPendingAuth(chatID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingAuth, chatID)
+}
+
+// Deauthorize removes authorization from current chat
+func (s *State) Deauthorize() error {
+	s.mu.Lock()
+	s.AuthorizedChat = ""
+	s.AuthorizedAt = time.Time{}
+	s.CodeUsed = false
+	s.Code = "" // Clear code - will be generated on next /start
+	s.mu.Unlock()
+
+	return s.Save()
+}
+
+// GenerateNewCode creates and stores a new auth code
+func (s *State) GenerateNewCode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Code = generateCode()
+	s.CodeUsed = false
+	return s.Code
 }
 
 // generateCode creates a random auth code in FOG-XXXX-XXXX format

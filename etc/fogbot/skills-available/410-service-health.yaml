@@ -1,0 +1,17 @@
+id: 410
+name: service-health
+description: >
+  [DEADMAN] Polls systemd to verify configured services are running.
+  Alerts if any stop.
+why: >
+  Critical services going down unintentionally indicates system failure
+  or deliberate sabotage. Early detection allows rapid response.
+requires:
+  - systemd
+tags: [deadman, systemd, health]
+severity_default: red
+config:
+  poll_interval: 60s
+  watch_services:
+    - sshd
+    - auditd

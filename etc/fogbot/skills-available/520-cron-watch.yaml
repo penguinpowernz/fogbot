@@ -1,0 +1,24 @@
+id: 520
+name: cron-watch
+description: >
+  Uses inotify to monitor cron directories, systemd timers, rc.local,
+  and profile scripts. Alerts on new or modified scheduled tasks.
+why: >
+  Persistence via scheduled tasks is a standard post-exploitation
+  technique. Attackers add cron jobs or systemd timers to maintain
+  access and run periodic tasks.
+requires:
+  - inotify
+tags: [persistence, cron, systemd]
+severity_default: red
+config:
+  watch_paths:
+    - /etc/cron.d
+    - /etc/cron.daily
+    - /etc/cron.hourly
+    - /etc/cron.monthly
+    - /etc/cron.weekly
+    - /var/spool/cron
+    - /etc/systemd/system
+    - /etc/rc.local
+    - /etc/profile.d

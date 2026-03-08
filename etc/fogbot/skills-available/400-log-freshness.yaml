@@ -1,0 +1,19 @@
+id: 400
+name: log-freshness
+description: >
+  [DEADMAN] Monitors configured log files with inotify. Alerts if a log
+  hasn't been written within the configured threshold.
+why: >
+  A log going silent means the service stopped, crashed, or an attacker
+  disabled logging. This is a negative indicator — absence of expected
+  activity rather than presence of suspicious activity.
+requires:
+  - inotify
+tags: [deadman, logs, health]
+severity_default: yellow
+config:
+  watch_logs:
+    - path: /var/log/auth.log
+      threshold: 10m
+    - path: /var/log/syslog
+      threshold: 5m

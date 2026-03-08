@@ -1,0 +1,23 @@
+id: 530
+name: fs-anomaly
+description: >
+  Monitors filesystem for anomalies: hidden files in unusual locations,
+  /etc/ld.so.preload modifications, immutable flags, large staging files.
+why: >
+  Hidden files outside home directories, ld.so.preload hooking, and
+  immutable flags are all attacker techniques. Large files in /tmp
+  often indicate data staging for exfiltration.
+requires:
+  - inotify
+  - root
+tags: [filesystem, rootkit, exfiltration]
+severity_default: red
+config:
+  watch_paths:
+    - /tmp
+    - /dev/shm
+    - /run
+    - /etc/ld.so.preload
+  alert_hidden_files: true
+  alert_immutable_flag: true
+  large_file_threshold_mb: 100

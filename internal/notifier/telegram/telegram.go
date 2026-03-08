@@ -2,11 +2,13 @@ package telegram
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,11 +35,30 @@ type Telegram struct {
 
 // NewTelegram creates a new Telegram notifier
 func NewTelegram(token string, chatID int64, authState *auth.State) *Telegram {
+	// Create HTTP client with proper TLS configuration
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			// Use system certificate pool
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+
+	// For testing only: allow skipping TLS verification
+	// DO NOT use in production!
+	if os.Getenv("FOGBOT_INSECURE_TLS") == "true" {
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+
+	httpClient := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: transport,
+	}
+
 	return &Telegram{
-		token:      token,
-		chatID:     chatID,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
-		authState:  authState,
+		token:       token,
+		chatID:      chatID,
+		httpClient:  httpClient,
+		authState:   authState,
 		rateLimiter: auth.NewRateLimiter(10, 3, 60*time.Second),
 	}
 }
@@ -64,6 +85,45 @@ func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
 
 	_, err := t.apiCall("sendMessage", params)
 	return err
+}
+
+// SendText sends a plain text message to a specific chat (for command responses)
+func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
+	// Parse chatID string to int64
+	var targetChatID int64
+	var err error
+	if chatID != "" {
+		targetChatID, err = strconv.ParseInt(chatID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid chat ID '%s': %w", chatID, err)
+		}
+	} else {
+		targetChatID = t.chatID
+	}
+
+	// Debug logging
+	fmt.Printf("[DEBUG] SendText: input chatID='%s', parsed=%d, struct chatID=%d, text='%s'\n",
+		chatID, targetChatID, t.chatID, text)
+
+	params := url.Values{}
+	params.Set("chat_id", strconv.FormatInt(targetChatID, 10))
+	params.Set("text", text)
+
+	_, err = t.apiCall("sendMessage", params)
+	if err != nil {
+		return fmt.Errorf("sendMessage to %d failed: %w", targetChatID, err)
+	}
+	return nil
+}
+
+// UpdateChatID updates the default chat ID for this notifier (called after authorization)
+func (t *Telegram) UpdateChatID(chatID string) error {
+	newChatID, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid chat ID: %w", err)
+	}
+	t.chatID = newChatID
+	return nil
 }
 
 // Commands returns a channel of inbound commands
@@ -258,7 +318,8 @@ func (t *Telegram) apiCall(method string, params url.Values) ([]byte, error) {
 
 	resp, err := t.httpClient.PostForm(apiURL, params)
 	if err != nil {
-		return nil, fmt.Errorf("api call failed: %w", err)
+		// Provide more detailed error for common issues
+		return nil, fmt.Errorf("api call failed (check network/TLS certs): %w", err)
 	}
 	defer resp.Body.Close()
 

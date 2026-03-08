@@ -15,8 +15,12 @@ services:
       - FOGBOT_DRY_RUN=true
       # Add your Telegram bot token here for testing
       # - TELEGRAM_BOT_TOKEN=your_token_here
+      # If you get TLS certificate errors, uncomment this (TESTING ONLY!):
+      # - FOGBOT_INSECURE_TLS=true
     volumes:
-      - ./etc:/etc:ro
+      # Mount only fogbot config, not entire /etc (preserves system files like CA certs)
+      - ./etc/fogbot:/etc/fogbot
+      - ./usr/local/bin/fogbot:/usr/local/bin/fogbot
       - fogbot-state:/var/lib/fogbot
       - fogbot-logs:/var/log/fogbot
     # Capabilities for monitoring (adjust based on skills)
@@ -25,7 +29,9 @@ services:
       - AUDIT_CONTROL
       - SYS_PTRACE
     # Run in foreground for docker-compose
-    command: ["/usr/local/bin/fogbot", "daemon"]
+    # command: ["/bin/bash"]
+    command: ["sleep", "36000"]
+#    command: ["/usr/local/bin/fogbot", "daemon"]
     restart: unless-stopped
 
 volumes:

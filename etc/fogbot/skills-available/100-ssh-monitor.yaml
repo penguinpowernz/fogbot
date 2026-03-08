@@ -1,0 +1,22 @@
+id: 100
+name: ssh-monitor
+description: >
+  Monitors /var/log/auth.log for SSH authentication events.
+  Detects brute force attempts, successful logins from new IPs,
+  direct root logins, and sudo/su usage.
+why: >
+  SSH is the most common remote access vector on Linux systems.
+  Brute force attempts are routine background noise on any
+  internet-facing host, but a successful login from an IP that
+  has never connected before — especially at an unusual hour —
+  is a high-value indicator of compromise. Direct root login
+  bypasses the sudo audit trail entirely.
+requires:
+  - auth.log read access
+tags: [auth, ssh, brute-force]
+severity_default: yellow
+config:
+  brute_force_threshold: 5
+  brute_force_window: 60s
+  alert_new_ip_login: true
+  quiet_hours_exempt: false

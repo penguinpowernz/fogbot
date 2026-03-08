@@ -1,0 +1,23 @@
+id: 700
+name: kernel-mod
+description: >
+  Monitors dmesg for kernel module loads/unloads, /proc/sys changes,
+  LD_PRELOAD usage, and security knob modifications.
+why: >
+  Kernel module loading is a primary rootkit vector. Changes to kernel
+  security parameters (ASLR, ptrace_scope) can disable defenses.
+  LD_PRELOAD indicates userland hooking.
+requires:
+  - root
+  - dmesg
+tags: [kernel, rootkit, modules]
+severity_default: red
+config:
+  alert_module_load: true
+  alert_module_unload: true
+  alert_sysctl_change: true
+  alert_ld_preload: true
+  watch_sysctl_paths:
+    - /proc/sys/kernel/randomize_va_space
+    - /proc/sys/kernel/yama/ptrace_scope
+    - /proc/sys/kernel/modules_disabled

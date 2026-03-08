@@ -1,5 +1,6 @@
 # Binaries
-fogbot
+usr/local/bin/fogbot
+
 *.exe
 *.exe~
 *.dll
@@ -19,23 +20,23 @@ go.work
 vendor/
 
 # Build artifacts
-/usr/local/bin/fogbot
+usr/local/bin/fogbot
 
 # State and runtime data
-/var/lib/fogbot/*
-!/var/lib/fogbot/.gitkeep
-/var/log/fogbot/*
-!/var/log/fogbot/.gitkeep
+var/lib/fogbot/*
+!var/lib/fogbot/.gitkeep
+var/log/fogbot/*
+!var/log/fogbot/.gitkeep
 
 # Enabled skills (symlinks created at runtime)
-/etc/fogbot/skills-enabled/*
-!/etc/fogbot/skills-enabled/.gitkeep
+etc/fogbot/skills-enabled/*
+!etc/fogbot/skills-enabled/.gitkeep
 
 # Config with secrets
-/etc/fogbot/config.yaml
+etc/fogbot/config.yaml
 
 # Temporary test directories
-/tmp/fogbot-test/
+tmp/fogbot-test/
 
 # IDE and editor files
 .vscode/

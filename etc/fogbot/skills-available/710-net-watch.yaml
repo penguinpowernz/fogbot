@@ -1,0 +1,24 @@
+id: 710
+name: net-watch
+description: >
+  Polls ss and /proc/net/tcp for unexpected outbound connections.
+  Correlates connections to processes.
+why: >
+  Processes that shouldn't make network calls (bash, interpreters)
+  connecting outbound is a strong malware indicator. C2 beacons
+  and data exfiltration manifest as network activity.
+requires:
+  - /proc/net
+tags: [network, process, c2]
+severity_default: red
+config:
+  poll_interval: 30s
+  suspicious_processes:
+    - bash
+    - sh
+    - python
+    - python3
+    - perl
+    - ruby
+  alert_new_listeners: true
+  blocklist_ips: []

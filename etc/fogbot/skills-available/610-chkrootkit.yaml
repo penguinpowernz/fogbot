@@ -1,0 +1,16 @@
+id: 610
+name: chkrootkit
+description: >
+  Parses chkrootkit output for suspicious findings.
+  Gracefully skips if chkrootkit is not installed.
+why: >
+  chkrootkit provides complementary rootkit detection with different
+  heuristics than rkhunter. Worth leveraging if available.
+requires:
+  - chkrootkit
+tags: [rootkit, scanner]
+severity_default: red
+config:
+  log_path: /var/log/chkrootkit.log
+  alert_on_infected: true
+  alert_on_suspicious: true

@@ -1,0 +1,26 @@
+id: 800
+name: bpftrace-exec
+description: >
+  Uses bpftrace to monitor suspicious execution patterns: shells from
+  unexpected parents, interpreter -c flags, curl|sh patterns, ptrace calls.
+  Gracefully degrades if bpftrace is unavailable.
+why: >
+  bpftrace provides deep visibility into exec patterns that indicate
+  exploitation: web servers spawning shells, in-memory script execution,
+  dropper patterns, debugger attachment for injection.
+requires:
+  - bpftrace
+  - root
+tags: [execution, bpf, exploitation]
+severity_default: red
+config:
+  suspicious_parent_child:
+    - parent: nginx
+      child: [bash, sh, dash]
+    - parent: apache2
+      child: [bash, sh, dash]
+    - parent: postgres
+      child: [bash, sh, dash]
+  alert_interpreter_c_flag: true
+  alert_curl_pipe_sh: true
+  alert_ptrace: true

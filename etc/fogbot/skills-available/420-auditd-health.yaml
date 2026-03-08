@@ -1,0 +1,17 @@
+id: 420
+name: auditd-health
+description: >
+  [DEADMAN] Verifies auditd process is running and its log is being written.
+  Alerts if either goes stale.
+why: >
+  auditd is foundational to fogbot's detection capability. If it stops,
+  multiple sensors go blind. An attacker who gains root will often kill
+  auditd first to avoid leaving traces.
+requires:
+  - auditd
+tags: [deadman, auditd, health]
+severity_default: red
+config:
+  poll_interval: 30s
+  log_path: /var/log/audit/audit.log
+  log_freshness_threshold: 2m

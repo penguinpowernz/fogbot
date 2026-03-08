@@ -1,0 +1,20 @@
+id: 900
+name: resource-anomaly
+description: >
+  Polls /proc for resource anomalies: sustained high CPU, unexpected
+  memory spikes, high I/O, crypto miner heuristics.
+why: >
+  Crypto miners max out CPU. Data exfiltration tools generate high I/O.
+  Sudden resource consumption from unexpected processes indicates
+  malicious activity.
+requires:
+  - /proc
+tags: [resources, cryptominer, performance]
+severity_default: yellow
+config:
+  poll_interval: 30s
+  cpu_threshold_pct: 90
+  cpu_sustained_seconds: 30
+  memory_threshold_mb: 1024
+  io_threshold_mb_per_sec: 50
+  check_process_hiding: true

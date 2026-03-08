@@ -1,0 +1,18 @@
+id: 510
+name: port-tripwires
+description: >
+  Configures iptables LOG rules for ports commonly used by malware and C2
+  frameworks. Monitors both inbound and outbound traffic.
+why: >
+  Outbound connections to unusual ports are often the first observable
+  indicator of compromise. Malware phones home, lateral movement tools
+  connect to SMB, crypto miners connect to Stratum pools.
+requires:
+  - iptables
+  - root
+tags: [network, ports, c2, malware]
+severity_default: red
+config:
+  watch_inbound: [135, 139, 445, 4444, 31337, 12345]
+  watch_outbound: [4444, 1080, 25, 3333, 5555, 7777, 14444]
+  log_prefix: "TRIPWIRE"

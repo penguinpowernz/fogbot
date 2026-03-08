@@ -1,0 +1,16 @@
+id: 600
+name: rkhunter
+description: >
+  Parses rkhunter log for warnings and infection indicators.
+  Gracefully skips if rkhunter is not installed.
+why: >
+  rkhunter is a mature rootkit detection tool. If it's already
+  installed and running, fogbot can leverage its findings.
+requires:
+  - rkhunter
+tags: [rootkit, scanner]
+severity_default: red
+config:
+  log_path: /var/log/rkhunter.log
+  alert_on_warning: true
+  alert_on_infection: true

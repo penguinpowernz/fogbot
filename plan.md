@@ -20,6 +20,8 @@ A Go daemon that configures and monitors multiple detection subsystems on a Linu
 - ✅ Skill management CLI: `fogbot skill list|enable|disable|info`
 - ✅ Configuration system with SIGHUP reload and environment overrides
 - ✅ Telegram notifier with TOFU authentication (FOG-XXXX-XXXX codes)
+- ✅ Improved auth flow: `/start` generates code on-demand, scans any message for code
+- ✅ Command handlers: `/start`, `/help` (context-aware), `/reset` (deauthorize)
 - ✅ SALUTE-formatted alerts (🔴 CONTACT, 🟡 MOVEMENT, 🟢 NOMINAL)
 - ✅ Rate limiting (10 auth/60s, 3 unauth lifetime) and input sanitization
 - ✅ HMAC-signed callback tokens for inline keyboards
@@ -291,23 +293,30 @@ Proves the operator has shell access before the bot will talk to anyone.
 
 ```
 1. fogbot starts
-2. Generates code: FOG-A3X9-K2M7
-3. Logs to stdout/journald: "Authorisation code: FOG-A3X9-K2M7"
-4. Bot ignores all messages except /start
-5. /start → bot replies "Enter authorisation code"
-6. Operator reads code from logs, types it into chat
+2. No auth code generated yet (waits for /start)
+3. Bot ignores all unauthorized messages except /start, /help
+4. /start → bot generates code: FOG-A3X9-K2M7
+         → logs to stdout/journald: "*** AUTH CODE: FOG-A3X9-K2M7 ***"
+         → marks chat as pending authorization
+         → replies "Enter authorisation code"
+5. Operator reads code from logs, pastes it in any message
+6. Bot scans all messages from pending chats for valid codes
 7. Code matches → chat_id saved to /var/lib/fogbot/state.json
-                 → chat_id also logged so operator can hardcode in config
-                 → code burned, never valid again
-                 → bot begins normal operation
-8. Any subsequent /start from a different chat_id → silently ignored
-9. On restart: if state.json has an authorised chat_id, skip challenge entirely
+                → chat_id also logged so operator can hardcode in config
+                → code burned, never valid again
+                → pending auth cleared
+                → bot begins normal operation
+8. /reset from authorized chat → deauthorize, clear code
+9. Next /start generates fresh code
+10. On restart: if state.json has an authorised chat_id, skip challenge entirely
 ```
 
 - **No expiry** — code valid until used, operator can take their time
 - **First to auth wins** — subsequent auth attempts silently dropped
 - **One authorised chat only** — no ambiguity about who the operator is
 - **Code format**: `FOG-XXXX-XXXX` (crypto/rand, uppercase alphanum)
+- **Code generation**: Only on `/start` command, not on daemon startup or reset
+- **Additional commands**: `/help` (context-aware), `/reset` (deauthorize current chat)
 
 ### Notifier Interface
 
@@ -893,13 +902,14 @@ Architectural decisions (interfaces, package structure, config format) are estab
 
 - [x] `internal/notifier/telegram/` — Telegram implementation, long polling, message sending, inline keyboard support, SALUTE-formatted alerts
 - [x] `internal/auth/` — TOFU challenge-response, `state.json` persistence, `FOG-XXXX-XXXX` code generation, inbound rate limiting (10 auth/60s, 3 unauth lifetime), unauth chat_id budget
+- [x] Improved auth flow — code generated only on `/start` (not on daemon startup), pending auth state tracking, code scanning in any message after `/start`
+- [x] Command handlers — `/start` (generate code + mark pending), `/help` (context-aware), `/reset` (deauthorize), `hi`/`hello` (ping)
 - [x] Input sanitization pipeline — applied to all inbound text without exception (ASCII only, control chars stripped, 64 char limit)
 - [x] Signed callback token generation and verification (HMAC-SHA256 keyed on bot token)
-- [x] `hi` / `hello` ping → bot replies (command handler scaffolded)
 - [x] 🟢 Startup / shutdown Telegram messages with host label and version
 - [x] Inline keyboard scaffolding (mechanism working, acknowledge buttons ready)
 
-**Exit criteria:** ✅ All met. fogbot starts, logs `Authorisation code: FOG-XXXX-XXXX`, operator DMs `/start`, enters code, bot confirms auth. Command handlers process `/start`, `hi`, `hello`, `status`, `approve`. SIGTERM sends offline message. Unauthorized chats are rate-limited and silently dropped.
+**Exit criteria:** ✅ All met. fogbot starts (no code generated), operator DMs `/start`, bot generates and logs code, operator pastes code in any message, bot confirms auth. Command handlers process `/start`, `/help`, `/reset`, `hi`, `hello`. SIGTERM sends offline message. Unauthorized chats are rate-limited and silently dropped.
 
 **Implementation notes:**
 - Alert formatting uses SALUTE structure (Size, Activity, Location, Unit, Time, Equipment)
@@ -907,6 +917,8 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - Rate limiter tracks both authorized (windowed) and unauthorized (lifetime budget) chats
 - Callback verification prevents replay attacks on inline keyboard buttons
 - Dry-run mode skips Telegram sends when `FOGBOT_DRY_RUN=true`
+- Auth code generated on-demand via `/start`, not on daemon startup — improves security and reduces log noise
+- Pending auth state allows flexible code input in any message after `/start`
 
 ---
 
