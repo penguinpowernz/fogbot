@@ -1,0 +1,38 @@
+# Source code
+cmd/
+internal/
+*.go
+go.mod
+go.sum
+
+# Build artifacts
+fogbot
+*.test
+*.out
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+plan.md
+
+# Debian packaging
+DEBIAN/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Ian tool
+.ianignore
+.ianpush
+
+# Development
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

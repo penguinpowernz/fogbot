@@ -1,0 +1,65 @@
+# Binaries
+fogbot
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Build artifacts
+/usr/local/bin/fogbot
+
+# State and runtime data
+/var/lib/fogbot/*
+!/var/lib/fogbot/.gitkeep
+/var/log/fogbot/*
+!/var/log/fogbot/.gitkeep
+
+# Enabled skills (symlinks created at runtime)
+/etc/fogbot/skills-enabled/*
+!/etc/fogbot/skills-enabled/.gitkeep
+
+# Config with secrets
+/etc/fogbot/config.yaml
+
+# Temporary test directories
+/tmp/fogbot-test/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Ian tool
+.ianpush
+
+# Docker volumes
+docker-volumes/
+
+# Debian package output
+*.deb
+*.changes
+*.buildinfo
+
+# Logs
+*.log
+
+# Local development overrides
+config.local.yaml
+.env
+.env.local

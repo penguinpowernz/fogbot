@@ -1,0 +1,13 @@
+Package: fogbot
+Version: 0.0.1
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: 
+Essential: no
+Homepage: http://example.com
+Installed-Size: 
+Depends: auditd
+Description: This is a description
+  This is a longer description
+  that takes up multiple lines

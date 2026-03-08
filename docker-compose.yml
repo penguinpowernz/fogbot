@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  fogbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fogbot-test
+    hostname: fogbot-test
+    environment:
+      - FOGBOT_CONFIG=/etc/fogbot/config.yaml
+      - FOGBOT_STATE_DIR=/var/lib/fogbot
+      - FOGBOT_SKILLS_AVAILABLE=/etc/fogbot/skills-available
+      - FOGBOT_SKILLS_ENABLED=/etc/fogbot/skills-enabled
+      - FOGBOT_DRY_RUN=true
+      # Add your Telegram bot token here for testing
+      # - TELEGRAM_BOT_TOKEN=your_token_here
+    volumes:
+      - ./etc:/etc:ro
+      - fogbot-state:/var/lib/fogbot
+      - fogbot-logs:/var/log/fogbot
+    # Capabilities for monitoring (adjust based on skills)
+    cap_add:
+      - NET_ADMIN
+      - AUDIT_CONTROL
+      - SYS_PTRACE
+    # Run in foreground for docker-compose
+    command: ["/usr/local/bin/fogbot", "daemon"]
+    restart: unless-stopped
+
+volumes:
+  fogbot-state:
+  fogbot-logs:

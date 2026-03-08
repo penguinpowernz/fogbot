@@ -1,0 +1,36 @@
+# Source code - exclude from package
+cmd/
+internal/
+*.go
+go.mod
+go.sum
+
+# Build artifacts
+fogbot
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+plan.md
+README.md
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Ian tool
+.ianpush
+
+# Development
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
