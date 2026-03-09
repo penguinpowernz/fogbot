@@ -12,6 +12,14 @@ requires:
   - root
 tags: [file-integrity, auth, auditd]
 severity_default: red
+requires_approval: true
+commands:
+  - "auditctl -w /etc/passwd -p wa -k fogbot-passwd"
+  - "auditctl -w /etc/shadow -p wa -k fogbot-shadow"
+  - "auditctl -w /etc/sudoers -p wa -k fogbot-sudoers"
+  - "auditctl -w /etc/sudoers.d -p wa -k fogbot-sudoers"
+  - "auditctl -w /etc/ssh/sshd_config -p wa -k fogbot-sshd"
+  - "auditctl -w /etc/pam.d -p wa -k fogbot-pam"
 config:
   watch_paths:
     - /etc/passwd

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -120,13 +121,41 @@ func IsEnabled(skillName string, basePath string) bool {
 		basePath = SkillsEnabledPath
 	}
 
+	// Check exact match first
 	linkPath := filepath.Join(basePath, skillName+".yaml")
 	info, err := os.Lstat(linkPath)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
+
+	// Check for files matching the pattern (e.g., 200-suid-sweep.yaml for "suid-sweep")
+	entries, err := os.ReadDir(basePath)
 	if err != nil {
 		return false
 	}
 
-	return info.Mode()&os.ModeSymlink != 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Check if it ends with -skillName.yaml
+		if strings.HasSuffix(name, "-"+skillName+".yaml") {
+			info, err := os.Lstat(filepath.Join(basePath, name))
+			if err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return true
+			}
+		}
+		// Check if it contains the skill name
+		if strings.Contains(name, skillName) && filepath.Ext(name) == ".yaml" {
+			info, err := os.Lstat(filepath.Join(basePath, name))
+			if err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // Enable creates a symlink in skills-enabled pointing to skills-available
@@ -156,10 +185,17 @@ func Enable(skillName string, availablePath, enabledPath string) error {
 		}
 		// Match files ending with skillName.yaml or containing skillName
 		name := entry.Name()
-		if name == skillName+".yaml" ||
-		   filepath.Ext(name) == ".yaml" &&
-		   (name[len(name)-len(skillName)-5:] == skillName+".yaml" || // ends with -skillName.yaml
-		    name == skillName+".yaml") {
+		if name == skillName+".yaml" {
+			sourcePath = filepath.Join(availablePath, name)
+			break
+		}
+		// Check if it ends with -skillName.yaml (e.g., 410-service-health.yaml)
+		if filepath.Ext(name) == ".yaml" && strings.HasSuffix(name, "-"+skillName+".yaml") {
+			sourcePath = filepath.Join(availablePath, name)
+			break
+		}
+		// Check if it contains the skill name (e.g., 410-service-health.yaml matches "service-health")
+		if filepath.Ext(name) == ".yaml" && strings.Contains(name, skillName) {
 			sourcePath = filepath.Join(availablePath, name)
 			break
 		}
@@ -191,6 +227,61 @@ func Enable(skillName string, availablePath, enabledPath string) error {
 	return nil
 }
 
+// LoadEnabledConfigs reads and parses all enabled skill configurations
+func LoadEnabledConfigs(basePath string) ([]SkillConfig, error) {
+	if basePath == "" {
+		basePath = SkillsEnabledPath
+	}
+
+	var configs []SkillConfig
+
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return configs, nil
+		}
+		return nil, fmt.Errorf("reading skills-enabled: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+
+		path := filepath.Join(basePath, entry.Name())
+
+		// Check if it's a symlink
+		info, err := os.Lstat(path)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			// Not a symlink, skip
+			continue
+		}
+
+		// Read and parse the YAML
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var cfg SkillConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		configs = append(configs, cfg)
+	}
+
+	// Sort by ID
+	sort.Slice(configs, func(i, j int) bool {
+		return configs[i].ID < configs[j].ID
+	})
+
+	return configs, nil
+}
+
 // Disable removes the symlink from skills-enabled
 func Disable(skillName string, enabledPath string) error {
 	if enabledPath == "" {
@@ -209,9 +300,17 @@ func Disable(skillName string, enabledPath string) error {
 			continue
 		}
 		name := entry.Name()
-		if name == skillName+".yaml" ||
-		   filepath.Ext(name) == ".yaml" &&
-		   name[len(name)-len(skillName)-5:] == skillName+".yaml" {
+		if name == skillName+".yaml" {
+			linkPath = filepath.Join(enabledPath, name)
+			break
+		}
+		// Check if it ends with -skillName.yaml
+		if filepath.Ext(name) == ".yaml" && strings.HasSuffix(name, "-"+skillName+".yaml") {
+			linkPath = filepath.Join(enabledPath, name)
+			break
+		}
+		// Check if it contains the skill name
+		if filepath.Ext(name) == ".yaml" && strings.Contains(name, skillName) {
 			linkPath = filepath.Join(enabledPath, name)
 			break
 		}

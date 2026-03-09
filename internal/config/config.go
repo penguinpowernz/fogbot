@@ -140,8 +140,14 @@ func (c *Config) Reload(path string) error {
 		return err
 	}
 
-	// Copy new values
-	*c = *newCfg
+	// Copy new values (avoid copying mutex)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.Telegram = newCfg.Telegram
+	c.HostLabel = newCfg.HostLabel
+	c.StateDir = newCfg.StateDir
+	c.Dedup = newCfg.Dedup
 
 	return nil
 }

@@ -16,6 +16,8 @@ type SkillConfig struct {
 	Tags            []string               `yaml:"tags"`
 	SeverityDefault string                 `yaml:"severity_default"`
 	Config          map[string]interface{} `yaml:"config"`
+	Commands        []string               `yaml:"commands"`        // Commands that will be run when enabling
+	RequiresApproval bool                  `yaml:"requires_approval"` // Prompt user before enabling
 }
 
 // DropIn represents a system configuration file managed by a skill
@@ -23,6 +25,22 @@ type DropIn struct {
 	Path    string // absolute path to drop-in file
 	Content string // file contents
 }
+
+// SystemCommand represents a command that needs approval before execution
+type SystemCommand struct {
+	Command     string            // The actual command to execute
+	Description string            // Human-readable description
+	Metadata    map[string]string // Extra data for state checking (e.g., rule identifiers)
+}
+
+// GetCommand returns the command string
+func (s SystemCommand) GetCommand() string { return s.Command }
+
+// GetDescription returns the description
+func (s SystemCommand) GetDescription() string { return s.Description }
+
+// GetMetadata returns the metadata map
+func (s SystemCommand) GetMetadata() map[string]string { return s.Metadata }
 
 // Skill is the unit of detection capability
 type Skill interface {
@@ -49,6 +67,14 @@ type Skill interface {
 
 	// Configure writes drop-ins and prepares the skill for watching
 	Configure(cfg map[string]interface{}) error
+
+	// DeduceCommands generates the system commands needed from the config
+	// Returns commands that require user approval if RequiresApproval is true
+	DeduceCommands(cfg map[string]interface{}) ([]SystemCommand, error)
+
+	// CheckSystemState verifies if the skill's configuration is already applied
+	// Returns true if system is already configured, false if commands need to run
+	CheckSystemState() (bool, error)
 
 	// Watch starts the detection loop, returning alerts on the channel
 	Watch(ctx context.Context) (<-chan notifier.Alert, error)
