@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 var (
 	DefaultConfigPath = getEnvOrDefault("FOGBOT_CONFIG", "/etc/fogbot/config.yaml")
 	DefaultStateDir   = getEnvOrDefault("FOGBOT_STATE_DIR", "/var/lib/fogbot")
+	DefaultHostLabel  = getEnvOrDefault("FOGBOT_HOST_LABEL", "")
 )
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -19,6 +21,18 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
+}
+
+// atoi64 converts an environment variable string to int64
+func atoi64(envVar string) int64 {
+	if envVar == "" {
+		return 0
+	}
+	val, err := strconv.ParseInt(envVar, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 // Config represents the fogbot configuration
@@ -80,6 +94,10 @@ func Load(path string) (*Config, error) {
 
 // applyDefaults sets default values for unspecified config options
 func (c *Config) applyDefaults() {
+	if c.HostLabel == "" {
+		c.HostLabel = DefaultHostLabel
+	}
+
 	if c.StateDir == "" {
 		c.StateDir = DefaultStateDir
 	}
@@ -140,10 +158,7 @@ func (c *Config) Reload(path string) error {
 		return err
 	}
 
-	// Copy new values (avoid copying mutex)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	// Copy new values (mutex already held)
 	c.Telegram = newCfg.Telegram
 	c.HostLabel = newCfg.HostLabel
 	c.StateDir = newCfg.StateDir
@@ -152,10 +167,29 @@ func (c *Config) Reload(path string) error {
 	return nil
 }
 
+// GetHostLabel safely returns the host label (with CLI override support via env check)
+func (c *Config) GetHostLabel() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.HostLabel == "" {
+		// Check for FOGBOT_HOST_LABEL env var as fallback
+		if envLabel := os.Getenv("FOGBOT_HOST_LABEL"); envLabel != "" {
+			return envLabel
+		}
+		hostname, _ := os.Hostname()
+		return hostname
+	}
+	return c.HostLabel
+}
+
 // GetTelegramToken safely returns the Telegram token
 func (c *Config) GetTelegramToken() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.Telegram.Token == "" {
+		// Fall back to environment variable
+		return os.Getenv("FOGBOT_TELEGRAM_TOKEN")
+	}
 	return c.Telegram.Token
 }
 
@@ -163,27 +197,13 @@ func (c *Config) GetTelegramToken() string {
 func (c *Config) GetTelegramChatID() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.Telegram.ChatID == 0 {
+		// Fall back to environment variable
+		return atoi64(os.Getenv("FOGBOT_TELEGRAM_CHAT_ID"))
+	}
 	return c.Telegram.ChatID
 }
 
-// SetTelegramChatID safely sets the Telegram chat ID
-func (c *Config) SetTelegramChatID(chatID int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.Telegram.ChatID = chatID
-}
-
-// GetHostLabel safely returns the host label
-func (c *Config) GetHostLabel() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.HostLabel == "" {
-		// Fallback to hostname
-		hostname, _ := os.Hostname()
-		return hostname
-	}
-	return c.HostLabel
-}
 
 // IsQuietHours checks if current time is within quiet hours
 func (c *Config) IsQuietHours() bool {

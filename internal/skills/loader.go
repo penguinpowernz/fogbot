@@ -11,8 +11,11 @@ import (
 )
 
 var (
-	SkillsAvailablePath = getEnvOrDefault("FOGBOT_SKILLS_AVAILABLE", "/etc/fogbot/skills-available")
-	SkillsEnabledPath   = getEnvOrDefault("FOGBOT_SKILLS_ENABLED", "/etc/fogbot/skills-enabled")
+	SkillsAvailableEnv = "FOGBOT_SKILLS_AVAILABLE"
+	SkillsEnabledEnv   = "FOGBOT_SKILLS_ENABLED"
+
+	SkillsAvailablePath = getEnvOrDefault(SkillsAvailableEnv, "/etc/fogbot/skills-available")
+	SkillsEnabledPath   = getEnvOrDefault(SkillsEnabledEnv, "/etc/fogbot/skills-enabled")
 )
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -20,6 +23,12 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
+}
+
+// OverrideSkillsPaths allows setting custom skills directory paths (for CLI flag support)
+func OverrideSkillsPaths(availablePath, enabledPath string) {
+	SkillsAvailablePath = availablePath
+	SkillsEnabledPath = enabledPath
 }
 
 // LoadAvailable reads all skill YAML files from skills-available directory

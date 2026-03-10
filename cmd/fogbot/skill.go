@@ -51,9 +51,14 @@ func (a *approvalTrackerAdapter) RevokeSkill(skillID int) error {
 	return a.tracker.RevokeSkill(skillID)
 }
 
-func initSkillSystem() error {
+func initSkillSystem(stateDir string) error {
 	var err error
-	approvalTracker, err = approval.NewTracker("/var/lib/fogbot")
+	// Use stateDir from global flags if provided, otherwise use build-time default
+	trackerPath := "/var/lib/fogbot"
+	if stateDir != "" {
+		trackerPath = stateDir
+	}
+	approvalTracker, err = approval.NewTracker(trackerPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize approval tracker: %w", err)
 	}
@@ -163,8 +168,8 @@ func runSkillList(cmd *cobra.Command, args []string) {
 func runSkillEnable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
-	// Initialize skill system
-	if err := initSkillSystem(); err != nil {
+	// Initialize skill system with stateDir from global flag if set
+	if err := initSkillSystem(stateDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -240,7 +245,7 @@ func runSkillDisable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
 	// Initialize skill system to revoke approvals
-	if err := initSkillSystem(); err != nil {
+	if err := initSkillSystem(stateDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -469,8 +474,8 @@ func runSkillInteractive(cmd *cobra.Command, args []string) {
 
 	fmt.Println("\nApplying changes...")
 
-	// Initialize skill system
-	if err := initSkillSystem(); err != nil {
+	// Initialize skill system with stateDir from global flag if set
+	if err := initSkillSystem(stateDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
