@@ -689,6 +689,7 @@ Numbering groups:
 - **6xx** — rootkit scanners (optional third-party tools)
 - **7xx** — network / kernel
   - **715** — network discovery (added Phase 2 extension)
+  - **720** — USB device monitor (added Phase 2 extension)
 - **8xx** — advanced / bpftrace
 - **9xx** — resource anomaly
 
@@ -754,6 +755,7 @@ Tab completion is provided for `enable` and `disable` — `enable` completes fro
  700  kernel-mod         disabled  root, dmesg           Kernel module load/unload, sysctl changes
  710  net-watch          disabled  /proc/net             Unexpected outbound connections by process
  715  net-discover       disabled  fping, root           Network discovery, new IP detection, baseline
+ 720  usb-monitor        disabled  udev or lsusb         USB device plug/unplug detection
  800  bpftrace-exec      disabled  bpftrace, root        Suspicious exec chains, ptrace, droppers
  900  resource-anomaly   disabled  /proc                 CPU/mem/IO spikes, crypto miner heuristics
 ```
@@ -958,10 +960,9 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - [x] Command handlers — `/start` (generate code + mark pending), `/help` (context-aware), `/reset` (deauthorize), `hi`/`hello` (ping)
 - [x] Input sanitization pipeline — applied to all inbound text without exception (ASCII only, control chars stripped, 64 char limit)
 - [x] Signed callback token generation and verification (HMAC-SHA256 keyed on bot token)
-- [x] 🟢 Startup / shutdown Telegram messages with host label and version
 - [x] Inline keyboard scaffolding (mechanism working, acknowledge buttons ready)
 
-**Exit criteria:** ✅ All met. fogbot starts (no code generated), operator DMs `/start`, bot generates and logs code, operator pastes code in any message, bot confirms auth. Command handlers process `/start`, `/help`, `/reset`, `hi`, `hello`. SIGTERM sends offline message. Unauthorized chats are rate-limited and silently dropped.
+**Exit criteria:** ✅ All met. fogbot starts (no code generated), operator DMs `/start`, bot generates and logs code, operator pastes code in any message, bot confirms auth. Command handlers process `/start`, `/help`, `/reset`, `hi`, `hello`. Unauthorized chats are rate-limited and silently dropped.
 
 **Implementation notes:**
 - Alert formatting uses SALUTE structure (Size, Activity, Location, Unit, Time, Equipment)
@@ -1007,8 +1008,8 @@ Architectural decisions (interfaces, package structure, config format) are estab
 
 ---
 
-### Phase 3 — Status Reports
-*Goal: the daily/weekly heartbeat with interactive drill-down.*
+### Phase 3 — Status Reports & Presence
+*Goal: the daily/weekly heartbeat with interactive drill-down, plus continuous presence indication.*
 
 - [ ] `internal/metrics/` — in-memory ring buffer accumulating per-section counts
 - [ ] Scheduled report engine — timezone-aware ticker, catch-up report on restart
@@ -1016,8 +1017,15 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - [ ] Tier 2 drill-down — inline keyboard per non-zero section, per-message-ID state, `[◀ Back]`
 - [ ] `/status` command — on-demand report
 - [ ] Quiet hours — suppress YELLOW during window, RED always fires
+- [ ] **Startup / shutdown messages** — 🟢 NOMINAL messages to Telegram on daemon start and SIGTERM shutdown, include host label and version
+- [ ] **Presence message system** — two-line status message (date + HH:MM) at bottom of chat
+  - Update every 30 seconds via Telegram message edit
+  - Store presence message ID in state.json
+  - On restart: delete old presence message if exists, create new one
+  - On normal alert send: delete and recreate presence message to keep it at bottom
+  - Presence acts as continuous heartbeat without spamming notifications
 
-**Exit criteria:** daily report arrives on schedule, operator drills into AUTH and FILES, `/status` returns immediate summary.
+**Exit criteria:** daily report arrives on schedule, operator drills into AUTH and FILES, `/status` returns immediate summary. Startup/shutdown messages sent on daemon lifecycle events. Presence message updates every 30s showing current time, stays at bottom of chat, and is recreated after each alert.
 
 ---
 
@@ -1043,16 +1051,21 @@ Architectural decisions (interfaces, package structure, config format) are estab
 
 ---
 
-### Phase 5 — Advanced Skills (kernel-level)
-*Goal: deep visibility via bpftrace and kernel monitoring.*
+### Phase 5 — Advanced Skills (kernel-level & hardware)
+*Goal: deep visibility via bpftrace, kernel monitoring, and hardware events.*
 
 - [ ] `internal/skills/800-bpftrace-exec/` — suspicious exec chains, interpreter `-c`, dropper patterns, ptrace; graceful degradation if bpftrace absent
 - [ ] `internal/skills/700-kernel-mod/` — dmesg: module load/unload, `/proc/sys/kernel` changes, `LD_PRELOAD`, ASLR knob
 - [ ] `internal/skills/900-resource-anomaly/` — CPU/mem/IO anomaly, crypto miner heuristics
 - [ ] `internal/skills/710-net-watch/` — `ss`/`/proc/net/tcp`: unexpected outbound by process, suspicious correlations
 - [ ] `internal/skills/715-net-discover/` — `fping` network sweep every 5min, baseline tracking, new IP alerts with Intel button
+- [ ] `internal/skills/720-usb-monitor/` — USB device plug/unplug detection via udev events (primary) or lsusb polling (fallback)
+  - Alert on new USB storage, keyboards, network adapters
+  - Track vendor ID, product ID, serial number, device type
+  - Configurable whitelist for expected devices (suppress alerts)
+  - Intel button for device detail (lsusb -v output, kernel messages)
 
-**Exit criteria:** fogbot detects shell spawned from nginx, kernel module load, sustained high CPU from unexpected process, and new IP appearing on network.
+**Exit criteria:** fogbot detects shell spawned from nginx, kernel module load, sustained high CPU from unexpected process, new IP appearing on network, and USB device insertion/removal.
 
 ---
 
