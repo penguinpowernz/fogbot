@@ -1,0 +1,31 @@
+id: 715
+name: net-discover
+description: >
+  Discovers hosts on local network(s) using fping every 5 minutes.
+  Maintains baseline of known IPs and alerts when new hosts appear.
+  Excludes own IP(s) from scanning.
+why: >
+  New devices appearing on your network can indicate unauthorized access,
+  lateral movement after initial compromise, or rogue devices. Tracking
+  network membership is essential for detecting pivoting attackers or
+  compromised IoT devices phoning home. The Intel button allows immediate
+  active reconnaissance (nmap, arp-scan) on unknown hosts without leaving
+  the Telegram interface.
+requires:
+  - fping
+  - root
+tags: [network, discovery, baseline, lateral-movement]
+severity_default: red
+intel_module: net-scan
+config:
+  scan_interval: 5m
+  networks:
+    - 192.168.1.0/24
+    # Add additional CIDR ranges as needed
+  exclude_ips: []  # Auto-populated with host's own IPs at enable time
+  baseline_file: /var/lib/fogbot/net_baseline.json
+  baseline_approval_required: true
+  fping_timeout: 500ms
+  fping_retries: 2
+  include_mac_lookup: true
+  include_reverse_dns: true

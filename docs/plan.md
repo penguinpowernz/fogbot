@@ -194,6 +194,21 @@ Watches for suspicious execution patterns:
 
 ---
 
+### 11. Network Discovery Monitor (`fping` + baseline)
+**Analogy: Spotting unfamiliar faces in a known area**
+
+- Uses `fping` to sweep local network(s) every 5 minutes
+- Maintains baseline of known IPs in `/var/lib/fogbot/net_baseline.json`
+- Excludes own IP(s) from scanning to avoid self-detection
+- Alerts on new IPs appearing on the network
+- Configurable network ranges (CIDR notation)
+- First run establishes baseline, operator approves via Telegram
+- **Intel button** on alerts triggers active reconnaissance (nmap, arp-scan, DNS)
+
+Reports: IP, MAC address, first-seen timestamp, reverse DNS if available.
+
+---
+
 ## Alert Structure (SALUTE Format)
 
 ### RED — immediate, single event
@@ -230,6 +245,41 @@ Host: prod-web-01 | 2024-01-15 03:40:00 UTC
 ```
 
 Severity levels: 🔴 CONTACT / 🟡 MOVEMENT / 🟢 NOMINAL
+
+### Intel Buttons (Interactive Recon)
+
+Alerts can include an **Intel** button for operator-triggered active reconnaissance. When tapped, fogbot gathers additional context using appropriate Intel modules:
+
+```
+🔴 [CONTACT] #715 net-discover
+━━━━━━━━━━━━━━━━━━━━━
+S: 1 new host
+A: First contact on network
+L: 192.168.1.47
+U: MAC: aa:bb:cc:dd:ee:ff
+T: 2024-01-15 03:42:17 UTC
+E: baseline established 2024-01-10
+━━━━━━━━━━━━━━━━━━━━━
+Host: prod-web-01
+[🔍 Intel]
+```
+
+Tapping `[🔍 Intel]` triggers the `net-scan` module:
+- nmap service scan on common ports
+- arp-scan for MAC vendor lookup
+- Reverse DNS lookup
+- TCP banner grab on open ports
+
+Results delivered as follow-up message with structured findings.
+
+**Intel Modules:**
+- `net-scan` — Network hosts (nmap, arp-scan, DNS)
+- `proc-detail` — Suspicious processes (tree, open files, memory maps)
+- `file-analysis` — Suspicious files (hash, strings, permissions)
+- `port-intel` — Port tripwires (service ID, banner grab)
+- `user-context` — Auth anomalies (login history, sudo log)
+
+Each alert type automatically includes the appropriate Intel button.
 
 ---
 
@@ -638,6 +688,7 @@ Numbering groups:
 - **5xx** — file & filesystem (may require drop-ins)
 - **6xx** — rootkit scanners (optional third-party tools)
 - **7xx** — network / kernel
+  - **715** — network discovery (added Phase 2 extension)
 - **8xx** — advanced / bpftrace
 - **9xx** — resource anomaly
 
@@ -702,6 +753,7 @@ Tab completion is provided for `enable` and `disable` — `enable` completes fro
  610  chkrootkit         disabled  chkrootkit            Parse chkrootkit output for suspicious findings
  700  kernel-mod         disabled  root, dmesg           Kernel module load/unload, sysctl changes
  710  net-watch          disabled  /proc/net             Unexpected outbound connections by process
+ 715  net-discover       disabled  fping, root           Network discovery, new IP detection, baseline
  800  bpftrace-exec      disabled  bpftrace, root        Suspicious exec chains, ptrace, droppers
  900  resource-anomaly   disabled  /proc                 CPU/mem/IO spikes, crypto miner heuristics
 ```
@@ -869,7 +921,7 @@ Architectural decisions (interfaces, package structure, config format) are estab
 *Goal: project compiles and runs. All interfaces defined. No Telegram, no skills, no auth — just the skeleton everything else hangs off.*
 
 - [x] Project scaffold — `go.mod`, package structure, `fogbot.service`
-- [x] `/etc/fogbot/skills-available/` — directory created on install, ships with all prebuilt skill YAMLs (17 skills: 100-900)
+- [x] `/etc/fogbot/skills-available/` — directory created on install, ships with all prebuilt skill YAMLs (18 skills: 100-900)
 - [x] `/etc/fogbot/skills-enabled/` — empty on install, operator populates with symlinks
 - [x] `internal/config/` — YAML parsing, validation, defaults, SIGHUP reload, environment variable overrides
 - [x] `internal/notifier/notifier.go` — `Notifier` interface, `Alert` and `Command` types, severity constants
@@ -998,15 +1050,25 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - [ ] `internal/skills/700-kernel-mod/` — dmesg: module load/unload, `/proc/sys/kernel` changes, `LD_PRELOAD`, ASLR knob
 - [ ] `internal/skills/900-resource-anomaly/` — CPU/mem/IO anomaly, crypto miner heuristics
 - [ ] `internal/skills/710-net-watch/` — `ss`/`/proc/net/tcp`: unexpected outbound by process, suspicious correlations
+- [ ] `internal/skills/715-net-discover/` — `fping` network sweep every 5min, baseline tracking, new IP alerts with Intel button
 
-**Exit criteria:** fogbot detects shell spawned from nginx, kernel module load, and sustained high CPU from unexpected process.
+**Exit criteria:** fogbot detects shell spawned from nginx, kernel module load, sustained high CPU from unexpected process, and new IP appearing on network.
 
 ---
 
-### Phase 6 — Hardening & Polish
-*Goal: production hardiness, notifier portability, and operator education.*
+### Phase 6 — Intel System & Polish
+*Goal: interactive reconnaissance, notifier portability, and operator education.*
 
-- [ ] `/why <id>` Telegram command — given a skill ID, sends the skill's `why:` field as a plain-language explanation of why the alert matters and what the operator should consider doing; uses the skill YAML directly, no LLM required
+- [ ] `internal/intel/` — Intel module interface + registry
+- [ ] `internal/intel/net-scan/` — nmap, arp-scan, DNS lookups for new IPs
+- [ ] `internal/intel/proc-detail/` — process tree, open files, memory maps for suspicious processes
+- [ ] `internal/intel/file-analysis/` — hash, strings, file type, permissions history for suspicious files
+- [ ] `internal/intel/port-intel/` — service ID, banner grab, reverse DNS for port tripwires
+- [ ] `internal/intel/user-context/` — login history, sudo log for auth anomalies
+- [ ] Telegram inline keyboard Intel buttons with HMAC-signed callbacks
+- [ ] Intel result formatting and delivery via Telegram
+- [ ] Map Intel modules to appropriate skill alerts
+- [ ] `/why <id>` Telegram command — sends skill's `why:` field as explanation
 - [ ] Additional notifier implementations (Slack, IRC — interface already defined in Phase 1)
 - [ ] Structured JSON logging to journald for SIEM ingestion
 - [ ] Threat intel IP blocklist integration (configurable feed URLs)
