@@ -1,0 +1,18 @@
+id: 550
+name: systemd-watch
+description: >
+  Monitor systemd via D-Bus for daemon-reload events and unit changes.
+  Detects when systemctl daemon-reload is executed, new units are loaded,
+  units are removed, or unit files are changed on disk.
+why: >
+  Attackers frequently establish persistence through systemd services.
+  Monitoring daemon-reload and unit changes can reveal when new malicious
+  services are registered or existing ones are modified. This catches
+  the configuration phase of systemd-based persistence.
+requires:
+  - dbus
+  - systemd
+tags: [persistence, systemd, configuration]
+severity_default: yellow
+requires_approval: false
+config: {}

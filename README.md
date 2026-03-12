@@ -80,11 +80,36 @@ Configuration via environment variables:
 - `FOGBOT_SKILLS_ENABLED` - Skills enabled directory
 - `FOGBOT_DRY_RUN` - Dry-run mode (true/false)
 
+## Included Skills
+
+| ID  | Skill Name        | Description                                          | Impl | Tested |
+|-----|-------------------|------------------------------------------------------|------|--------|
+| 100 | ssh-monitor       | SSH brute force, new-IP logins, root login           | ✅   |        |
+| 200 | suid-sweep        | Monitor SUID/SGID binaries for changes               | ✅   |        |
+| 210 | proc-exec         | Track process executions via auditd                  | ✅   |        |
+| 300 | pkg-monitor       | Alert on package installs/removals                   | ✅   |        |
+| 400 | log-freshness     | Detect stale/tampered log files                      | ✅   |        |
+| 410 | service-health    | Monitor critical systemd services                    | ✅   | ✅     |
+| 420 | auditd-health     | Ensure auditd is running                             | ✅   |        |
+| 500 | passwd-watch      | Detect changes to /etc/passwd, /etc/shadow           | ❌   |        |
+| 510 | port-tripwires    | Alert on connections to specific closed ports        | ✅   |        |
+| 520 | cron-watch        | Monitor cron file changes                            | ❌   |        |
+| 530 | fs-anomaly        | Filesystem integrity monitoring                      | ❌   |        |
+| 540 | dir-watch         | Watch directories for new files                      | ✅   |  ✅    |
+| 550 | systemd-watch     | Detect daemon-reload and unit changes via D-Bus      | ✅   |        |
+| 600 | rkhunter          | Rootkit detection wrapper                            | ❌   |        |
+| 610 | chkrootkit        | Rootkit detection wrapper                            | ❌   |        |
+| 700 | kernel-mod        | Alert on kernel module loads                         | ❌   |        |
+| 710 | net-watch         | Monitor network connections                          | ❌   |        |
+| 715 | net-discover      | Detect new network interfaces                        | ❌   |        |
+| 800 | bpftrace-exec     | eBPF-based execution monitoring                      | ❌   |        |
+| 900 | resource-anomaly  | CPU/memory anomaly detection                         | ❌   |        |
+
 ## Phase 1 & 1.5 Complete
 
 ✅ Core infrastructure implemented:
 - Project scaffold and package structure
-- Skill system with 17 prebuilt skills (100-900 series)
+- Skill system with 20 prebuilt skills (100-900 series)
 - Configuration management with SIGHUP reload
 - Notifier interface with Telegram implementation
 - TOFU authentication with challenge-response
@@ -96,6 +121,25 @@ Configuration via environment variables:
 - CLI with skill management commands
 - Docker Compose test environment with proper capabilities
 - Dry-run mode for system modifications
+- 10 skills fully implemented and ready to use
+
+## Phase 2 & 2.5 - In Progress
+
+🚧 Currently implementing skill watchers and testing:
+
+**Phase 2 - Skill Implementation:**
+- ✅ 10 skills with full implementations (ssh-monitor, suid-sweep, proc-exec, pkg-monitor, log-freshness, service-health, auditd-health, port-tripwires, dir-watch, systemd-watch)
+- 🔄 Testing and debugging active skills
+- 🔄 Implementing remaining skills (passwd-watch, cron-watch, fs-anomaly, kernel-mod, net-watch, etc.)
+- 🔄 Integrating skills with Telegram alert pipeline
+- ✅ Self-watch monitoring (fogbot monitors its own binary and config files)
+
+**Phase 2.5 - Refinement:**
+- ✅ Command approval workflow for system-modifying skills
+- Skill configuration validation and error handling
+- Enhanced logging and debugging for skill lifecycle
+- Alert deduplication tuning
+- Performance optimization for long-running watchers
 
 ## License
 

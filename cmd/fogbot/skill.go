@@ -12,6 +12,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
+	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/spf13/cobra"
 )
 
@@ -238,6 +239,8 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 		return porttripwires.New(cfg)
 	case 540:
 		return dirwatch.NewFromConfig(cfg)
+	case 550:
+		return systemdwatch.NewFromConfig(cfg)
 	// Add more skill implementations here as they're created
 	default:
 		return nil

@@ -24,6 +24,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
+	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
@@ -198,6 +199,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(servicehealth.New())
 	registry.Register(auditdhealth.New())
 	registry.Register(dirwatch.New())
+	registry.Register(systemdwatch.New())
 
 	// Log registered skills
 	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))
