@@ -113,12 +113,16 @@ func (d *DirWatch) Config() map[string]interface{} {
 func (d *DirWatch) Configure(cfg map[string]interface{}) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	log.Printf("[dir-watch] Configure called with config: %+v", cfg)
 	d.config = cfg
 	d.applyConfig(cfg)
+	log.Printf("[dir-watch] After applyConfig: watch_paths=%v, recursive=%v, glob_filter=%s, whitelist=%v",
+		d.watchPaths, d.recursive, d.globFilter, d.whitelist)
 	return nil
 }
 
 func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
+	log.Printf("[dir-watch] Watch() called - starting watcher")
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("creating inotify watcher: %w", err)
@@ -130,16 +134,19 @@ func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 	recursive := d.recursive
 	d.mu.RUnlock()
 
+	log.Printf("[dir-watch] Will watch %d paths: %v", len(paths), paths)
+
 	// Add paths to watcher
 	for _, p := range paths {
 		if err := d.addPath(watcher, p, recursive); err != nil {
 			log.Printf("[dir-watch] Warning: could not watch %s: %v", p, err)
 		} else {
-			log.Printf("[dir-watch] Watching %s (recursive=%v)", p, recursive)
+			log.Printf("[dir-watch] ✓ Watching %s (recursive=%v)", p, recursive)
 		}
 	}
 
 	alerts := make(chan notifier.Alert, 10)
+	log.Printf("[dir-watch] Event loop starting, monitoring for CREATE|RENAME|WRITE events")
 
 	go func() {
 		defer close(alerts)
@@ -155,12 +162,15 @@ func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 					return
 				}
 
-				// Only care about new entries arriving
-				if event.Op&(fsnotify.Create|fsnotify.Rename) == 0 {
-					continue
-				}
+				log.Printf("[dir-watch] Event received: %s %s", event.Op, event.Name)
 
-				d.handleEvent(event.Name, watcher, recursive, alerts)
+				// Care about new entries, renames, and modifications
+				if event.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Write) != 0 {
+					log.Printf("[dir-watch] Processing event (matched filter)")
+					d.handleEvent(event.Name, event.Op, watcher, recursive, alerts)
+				} else {
+					log.Printf("[dir-watch] Ignoring event (not CREATE|RENAME|WRITE)")
+				}
 
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -191,8 +201,9 @@ func (d *DirWatch) addPath(watcher *fsnotify.Watcher, path string, recursive boo
 	return nil
 }
 
-func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive bool, alerts chan<- notifier.Alert) {
+func (d *DirWatch) handleEvent(path string, op fsnotify.Op, watcher *fsnotify.Watcher, recursive bool, alerts chan<- notifier.Alert) {
 	name := filepath.Base(path)
+	log.Printf("[dir-watch] handleEvent: path=%s, op=%s, name=%s", path, op, name)
 
 	// Check whitelist
 	d.mu.RLock()
@@ -201,6 +212,7 @@ func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive
 	d.mu.RUnlock()
 
 	if whitelisted {
+		log.Printf("[dir-watch] Ignoring whitelisted file: %s", name)
 		return
 	}
 
@@ -208,6 +220,7 @@ func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive
 	if globFilter != "" {
 		matched, err := filepath.Match(globFilter, name)
 		if err != nil || !matched {
+			log.Printf("[dir-watch] File %s doesn't match glob filter %s", name, globFilter)
 			return
 		}
 	}
@@ -216,8 +229,10 @@ func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive
 	info, err := os.Lstat(path)
 	if err != nil {
 		// File may have been removed immediately after creation (e.g. tmp files)
+		log.Printf("[dir-watch] Could not stat %s: %v (may have been deleted)", path, err)
 		return
 	}
+	log.Printf("[dir-watch] File stat successful: %s (mode=%04o, isDir=%v)", path, info.Mode().Perm(), info.IsDir())
 
 	// If it's a new directory and recursive mode is on, watch it too
 	if info.IsDir() && recursive {
@@ -239,20 +254,36 @@ func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive
 		equip = kind + " (executable)"
 	}
 
+	// Determine operation type and alert details
+	var operation, title, activity string
 	severity := notifier.SeverityContact
-	title := "New Entry in Watched Directory"
-	if info.IsDir() {
-		severity = notifier.SeverityMovement
-		title = "New Directory in Watched Path"
+
+	if op&fsnotify.Write != 0 {
+		operation = "modified"
+		title = "File Modified in Watched Directory"
+		activity = fmt.Sprintf("File modified: %s", name)
+		severity = notifier.SeverityMovement // modifications are more concerning
+	} else if op&fsnotify.Rename != 0 {
+		operation = "renamed"
+		title = "File Renamed in Watched Directory"
+		activity = fmt.Sprintf("File renamed: %s", name)
+	} else {
+		operation = "created"
+		title = "New Entry in Watched Directory"
+		activity = fmt.Sprintf("New %s created: %s", kind, name)
+		if info.IsDir() {
+			severity = notifier.SeverityMovement
+			title = "New Directory in Watched Path"
+		}
 	}
 
-	alerts <- notifier.Alert{
+	alert := notifier.Alert{
 		Severity:  severity,
 		SkillID:   SkillID,
 		SkillName: SkillName,
 		Title:     title,
 		Size:      "1 " + kind,
-		Activity:  fmt.Sprintf("New %s created: %s", kind, name),
+		Activity:  activity,
 		Location:  filepath.Dir(path),
 		Unit:      owner,
 		Time:      time.Now(),
@@ -260,7 +291,10 @@ func (d *DirWatch) handleEvent(path string, watcher *fsnotify.Watcher, recursive
 		Metadata: map[string]string{
 			"path":       path,
 			"kind":       kind,
+			"operation":  operation,
 			"executable": fmt.Sprintf("%v", executable),
 		},
 	}
+	log.Printf("[dir-watch] Sending alert: %s - %s", alert.Title, alert.Activity)
+	alerts <- alert
 }
