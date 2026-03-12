@@ -141,6 +141,13 @@ Configuration via environment variables:
 - Alert deduplication tuning
 - Performance optimization for long-running watchers
 
+## Pictures
+<img width="381" height="268" alt="image" src="https://github.com/user-attachments/assets/c7876d8e-71f3-4924-a91a-d608b19203b5" />
+<img width="347" height="225" alt="image" src="https://github.com/user-attachments/assets/17681de9-39fb-49df-8a98-0c62088577be" />
+<img width="324" height="317" alt="image" src="https://github.com/user-attachments/assets/cf2f5f0e-7aa0-4c75-b689-c8757b45add3" />
+
+
+
 ## License
 
 See plan.md for full specification.
