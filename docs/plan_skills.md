@@ -20,6 +20,7 @@ Skills live in `/etc/fogbot/skills-available/` and are enabled by symlinking int
 │   ├── 510-port-tripwires.yaml
 │   ├── 520-cron-watch.yaml
 │   ├── 530-fs-anomaly.yaml
+│   ├── 540-dir-watch.yaml
 │   ├── 600-rkhunter.yaml
 │   ├── 610-chkrootkit.yaml
 │   ├── 700-kernel-mod.yaml
@@ -110,6 +111,7 @@ Tab completion is provided for `enable` and `disable` — `enable` completes fro
  510  port-tripwires     disabled  iptables, root        C2/malware port traffic (inbound + outbound)
  520  cron-watch         disabled  inotify               New crontab entries, systemd timers
  530  fs-anomaly         disabled  inotify, root         Hidden files, ld.so.preload, immutable flag
+ 540  dir-watch          disabled  inotify               Alert on new files/directories added to watched folders
  600  rkhunter           disabled  rkhunter              Parse rkhunter.log for warnings/infections
  610  chkrootkit         disabled  chkrootkit            Parse chkrootkit output for suspicious findings
  700  kernel-mod         disabled  root, dmesg           Kernel module load/unload, sysctl changes
@@ -242,7 +244,25 @@ Watches for suspicious execution patterns:
 
 ---
 
-### 9. Scheduled Task Monitor
+### 9. Directory Watch Monitor
+**Skill ID:** 540 (dir-watch)
+**Analogy: Guard post at the gate — alert when anything enters**
+
+Uses inotify to watch one or more configured directories and alerts whenever a new file or subdirectory is created inside them. Designed for locations that should be static or change only during known maintenance windows:
+
+- Operator configures a list of paths to watch in the skill YAML
+- Alerts on `IN_CREATE` and `IN_MOVED_TO` events (new entries arriving, not modifications)
+- Optional recursive mode — watch all subdirectories as well
+- Optional filename glob filter — e.g. only alert on `*.sh`, `*.py`, or executables
+- Optional whitelist: suppress alerts for expected filenames (e.g. lock files, PID files)
+- Useful for: `/usr/local/bin/`, `/etc/cron.d/`, `/root/`, custom sensitive data dirs
+- Pairs well with 520 (cron-watch) and 530 (fs-anomaly) for layered filesystem coverage
+
+Reports: full path of new entry, whether it is a file or directory, permissions, owner, and whether it appears executable.
+
+---
+
+### 10. Scheduled Task Monitor (cron-watch)
 **Skill ID:** 520 (cron-watch)
 **Analogy: Checking for newly emplaced IEDs on a known route**
 
@@ -255,7 +275,7 @@ Watches for suspicious execution patterns:
 
 ---
 
-### 10. Resource Anomaly Monitor (proc polling)
+### 11. Resource Anomaly Monitor (proc polling)
 **Skill ID:** 900 (resource-anomaly)
 **Analogy: Noticing the comms traffic spike — something is active**
 
@@ -267,7 +287,7 @@ Watches for suspicious execution patterns:
 
 ---
 
-### 11. Network Discovery Monitor (`fping` + baseline)
+### 12. Network Discovery Monitor (`fping` + baseline)
 **Skill ID:** 715 (net-discover)
 **Analogy: Spotting unfamiliar faces in a known area**
 
@@ -283,7 +303,7 @@ Reports: IP, MAC address, first-seen timestamp, reverse DNS if available.
 
 ---
 
-### 12. USB Device Monitor (udev + lsusb)
+### 13. USB Device Monitor (udev + lsusb)
 **Skill ID:** 720 (usb-monitor)
 **Analogy: Watching for unfamiliar equipment appearing on site**
 
@@ -297,7 +317,7 @@ Reports: device type, vendor/product IDs, serial number, timestamp of connection
 
 ---
 
-### 13. Package Monitor
+### 14. Package Monitor
 **Skill ID:** 300 (pkg-monitor)
 **Analogy: Noticing new supplies have been delivered**
 

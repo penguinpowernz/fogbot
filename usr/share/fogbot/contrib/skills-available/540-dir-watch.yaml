@@ -1,0 +1,26 @@
+id: 540
+name: dir-watch
+description: >
+  Alert on new files or directories added to watched folders.
+  Uses inotify to monitor configured paths for IN_CREATE and
+  IN_MOVED_TO events. Useful for locations that should be static
+  or change only during known maintenance windows.
+why: >
+  Attackers frequently stage tools, scripts, and payloads in
+  sensitive directories before execution. A new file appearing
+  in /usr/local/bin/, /etc/cron.d/, or /root/ outside of a
+  maintenance window is a strong indicator of compromise or
+  persistence activity. This skill catches the delivery phase.
+requires:
+  - inotify
+tags: [filesystem, persistence, delivery]
+severity_default: red
+requires_approval: false
+config:
+  watch_paths:
+    - /usr/local/bin/
+    - /etc/cron.d/
+    - /root/
+  recursive: false
+  glob_filter: ""
+  whitelist: []

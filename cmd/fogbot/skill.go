@@ -10,6 +10,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/penguinpowernz/fogbot/internal/approval"
 	"github.com/penguinpowernz/fogbot/internal/skills"
+	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/spf13/cobra"
 )
@@ -235,6 +236,8 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 	switch cfg.ID {
 	case 510:
 		return porttripwires.New(cfg)
+	case 540:
+		return dirwatch.NewFromConfig(cfg)
 	// Add more skill implementations here as they're created
 	default:
 		return nil
