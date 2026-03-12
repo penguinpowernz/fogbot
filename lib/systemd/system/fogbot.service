@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=FOGBOT_STATE_DIR="/var/lib/fogbot"
+Environment=FOGBOT_SKILLS_AVAILABLE="/etc/fogbot/skills-available"
+Environment=FOGBOT_SKILLS_ENABLED="/etc/fogbot/skills-enabled"
 ExecStart=/usr/local/bin/fogbot daemon
 Restart=on-failure
 RestartSec=5s
