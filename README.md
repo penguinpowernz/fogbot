@@ -2,7 +2,18 @@
 
 > *"They don't fire unless compromised. They watch, they listen, they report."*
 
-A Go daemon that configures and monitors multiple detection subsystems on a Linux host, reporting anomalies as structured SALUTE-style alerts over Telegram.
+A Go daemon that configures and monitors multiple detection subsystems on a Linux
+host, reporting anomalies as structured SALUTE-style alerts over Telegram.
+
+Based on the doctrine of Forward Observers, a critical team in warfare responsible
+for tracking enemy activity and reporting back to HQ using SALUTE reports.
+
+As developers we are uniquely placed to be exploited by adversaries for the purposes
+of espionage or access to customers systems. One of the biggest hacks in history, 
+SolarWinds, started with the exploitation of a developers computer.
+
+This is a tool for protecting the Linux machines of developers using intrusion detection
+methods, with instant notifications going to Telegram by way of a Telegram bot.
 
 ## Quick Start
 
