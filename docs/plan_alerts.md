@@ -39,6 +39,136 @@ Severity levels: 🔴 CONTACT / 🟡 MOVEMENT / 🟢 NOMINAL
 
 ---
 
+## Contact Reports (Incident Tracking)
+
+In forward observer terminology, a **contact report** documents an observation from start to resolution. fogbot uses contact reports to prevent alert spam while maintaining a complete record of each detected anomaly.
+
+### Concept
+
+- **One alert per contact** — When an anomaly is detected, fogbot creates a contact report and sends a single alert
+- **Duration tracking** — Each contact has a start time and end time
+  - Instantaneous contacts (port tripwire hit): start == end
+  - Ongoing contacts (service down): end updated when resolved
+- **Automatic intelligence collection** — Each skill defines what intel to gather for its contact type
+- **Persistent storage** — Contact reports stored in `/var/lib/fogbot/contacts/`
+
+### File Format
+
+Contact reports are stored as individual JSON files named by timestamp and skill ID:
+
+`/var/lib/fogbot/contacts/2024-01-15T034217Z-510-port-tripwire.json`
+
+```json
+{
+  "id": "2024-01-15T034217Z-510-port-tripwire",
+  "skill_id": 510,
+  "skill_name": "port-tripwires",
+  "severity": "red",
+  "start_time": "2024-01-15T03:42:17Z",
+  "end_time": "2024-01-15T03:42:17Z",
+  "status": "closed",
+  "salute": {
+    "size": "1 connection",
+    "activity": "Inbound connection on tripwire port 4444",
+    "location": "port 4444/tcp",
+    "unit": "src: 1.2.3.4:52341 → dst: 192.168.1.10:4444",
+    "time": "2024-01-15T03:42:17Z",
+    "equipment": "iptables rule: fw-510-in"
+  },
+  "intel": {
+    "collected_at": "2024-01-15T03:42:18Z",
+    "source_ip": "1.2.3.4",
+    "reverse_dns": "suspicious-host.example.com",
+    "process": {
+      "pid": 1234,
+      "name": "nc",
+      "cmdline": "nc -l -p 4444",
+      "user": "www-data"
+    },
+    "netstat": "ESTABLISHED 1.2.3.4:52341 192.168.1.10:4444"
+  },
+  "telegram_message_id": 987654,
+  "host": "prod-web-01"
+}
+```
+
+### Contact Lifecycle
+
+```
+1. Anomaly detected by skill
+2. Skill checks if contact already open for this anomaly type
+3. If no open contact:
+   a. Create contact report with start_time, status="open"
+   b. Skill gathers intel (defines what to collect)
+   c. Write contact report to /var/lib/fogbot/contacts/
+   d. Send single Telegram alert with SALUTE + intel
+   e. Store telegram_message_id in contact report
+4. If anomaly resolves (e.g., service comes back up):
+   a. Update contact report with end_time, status="closed"
+   b. Optionally send resolution message (configurable)
+5. If same anomaly recurs while contact open:
+   a. Update contact report (increment counters, add intel)
+   b. Do NOT send new alert (anti-spam)
+   c. Optionally update existing Telegram message with new counts
+```
+
+### Intel Collection Per Skill
+
+Each skill defines what intel to gather for its contact type:
+
+| Skill | Intel Gathered |
+|-------|---------------|
+| **port-tripwires** | Source IP, reverse DNS, process listening/connecting, netstat output, first N packets |
+| **ssh-monitor** | Source IP, username attempts, reverse DNS, geolocation, fail2ban status |
+| **suid-sweep** | File path, permissions, owner, SHA256 hash, file command output, creation time |
+| **proc-exec** | Process tree, open files, memory maps, parent process, command line, environment variables |
+| **service-health** | Service status, last log entries, systemd journal tail, restart count |
+| **net-discover** | MAC address, MAC vendor, open ports (nmap), reverse DNS, ARP cache entry |
+| **usb-monitor** | Vendor/Product ID, serial number, lsusb -v output, kernel messages (dmesg), device type |
+
+### Configuration
+
+```yaml
+contact_reports:
+  enabled: true
+  storage_dir: /var/lib/fogbot/contacts
+  max_age_days: 90  # auto-cleanup old reports
+  send_resolution_alerts: false  # notify when contact closes
+  update_telegram_on_recurrence: true  # edit message with new counts
+```
+
+### Anti-Spam Behavior
+
+**Without contact reports:**
+- Service goes down at 03:00
+- Alert sent at 03:00
+- Skill checks again at 03:05: still down → alert sent
+- Skill checks again at 03:10: still down → alert sent
+- Result: 3+ alerts for same issue
+
+**With contact reports:**
+- Service goes down at 03:00
+- Contact report created, alert sent once
+- Skill checks again at 03:05: contact still open, no alert
+- Service comes up at 03:15
+- Contact report closed with end_time
+- Result: 1 alert, complete incident record
+
+### Implementation (Phase 3)
+
+- [ ] `internal/contacts/` — Contact report manager
+  - Create/update/close contact reports
+  - Check if contact already open for anomaly
+  - Auto-cleanup old reports (configurable retention)
+  - Query interface for status reports
+- [ ] Skill interface extension: `GatherIntel(ctx context.Context, anomaly Anomaly) (Intel, error)`
+- [ ] Update each skill to implement intel gathering
+- [ ] Telegram message updating when contact recurs (edit with new counts)
+- [ ] Optional resolution alerts (configurable)
+- [ ] Status report integration (show open contacts count)
+
+---
+
 ## Intel Buttons (Interactive Recon)
 
 Alerts can include an **Intel** button for operator-triggered active reconnaissance. When tapped, fogbot gathers additional context using appropriate Intel modules:

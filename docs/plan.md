@@ -16,7 +16,7 @@ A Go daemon that configures and monitors multiple detection subsystems on a Linu
 
 ### What Works Now
 - ✅ Full project structure with Debian packaging layout (etc/, usr/, var/)
-- ✅ 18 detection skills defined (100-900 series) with complete YAML metadata
+- ✅ 19 detection skills defined (100-900 series) with complete YAML metadata
 - ✅ Skill management CLI: `fogbot skill list|enable|disable|info`
 - ✅ Configuration system with SIGHUP reload and environment overrides
 - ✅ Telegram notifier with TOFU authentication (FOG-XXXX-XXXX codes)
@@ -88,7 +88,7 @@ fogbot/
 
 **LP/OP Doctrine:** "They don't fire unless compromised. They watch, they listen, they report."
 
-**Skills:** Self-contained detection modules (18 defined: 100-900 series)
+**Skills:** Self-contained detection modules (19 defined: 100-900 series)
 - Enable via symlink: `/etc/fogbot/skills-enabled/` → `/etc/fogbot/skills-available/`
 - Each skill has YAML metadata: id, name, description, why, requires, config
 - Skills use **command deduction** — config is declarative, commands generated at enable time

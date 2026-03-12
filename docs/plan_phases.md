@@ -109,8 +109,16 @@ Architectural decisions (interfaces, package structure, config format) are estab
   - On restart: delete old presence message if exists, create new one
   - On normal alert send: delete and recreate presence message to keep it at bottom
   - Presence acts as continuous heartbeat without spamming notifications
+- [ ] **Contact reports (anti-spam incident tracking)** — one alert per contact, prevents duplicate alerts
+  - `internal/contacts/` — Contact report manager (create/update/close, check if open, auto-cleanup)
+  - Storage in `/var/lib/fogbot/contacts/` as individual JSON files
+  - Track start/end time, status (open/closed), SALUTE data, collected intel
+  - Each skill implements `GatherIntel()` to define what intel to collect automatically
+  - Update existing Telegram message when contact recurs (edit with new counts)
+  - Optional resolution alerts when contact closes (configurable)
+  - Status report integration showing open contacts count
 
-**Exit criteria:** daily report arrives on schedule, operator drills into AUTH and FILES, `/status` returns immediate summary. Startup/shutdown messages sent on daemon lifecycle events. Presence message updates every 30s showing current time, stays at bottom of chat, and is recreated after each alert.
+**Exit criteria:** daily report arrives on schedule, operator drills into AUTH and FILES, `/status` returns immediate summary. Startup/shutdown messages sent on daemon lifecycle events. Presence message updates every 30s showing current time, stays at bottom of chat, and is recreated after each alert. Contact reports prevent alert spam — recurring anomalies update existing contact instead of sending new alert.
 
 ---
 

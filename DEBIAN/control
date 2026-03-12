@@ -1,13 +1,13 @@
 Package: fogbot
-Version: 0.0.1
+Version: 1.0.0
 Section: misc
 Priority: optional
 Architecture: all
-Maintainer: 
+Maintainer: Robert Mcleod <robert@penguinpower.co.nz>
 Essential: no
-Homepage: http://example.com
-Installed-Size: 
+Homepage: https://github.com/penguinpower.co.nz>
+Installed-Size: 13958
 Depends: auditd
-Description: This is a description
+Description: A chatbot to help detect intrusions
   This is a longer description
   that takes up multiple lines

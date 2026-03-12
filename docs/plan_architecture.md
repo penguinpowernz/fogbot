@@ -46,6 +46,7 @@ fogbot/
 │   ├── selfwatch/               # inotify on fogbot binary, config, state dir, drop-ins
 │   ├── baseline/                # known-good state snapshots + approval state machine
 │   ├── metrics/                 # per-period counters for status reports
+│   ├── contacts/                # contact report manager (incident tracking, anti-spam)
 │   └── dedup/                   # alert deduplication / rate limiting
 ├── skills-available/            # prebuilt skill YAMLs — shipped with fogbot
 │   ├── 100-ssh-monitor.yaml
@@ -93,6 +94,9 @@ type Skill interface {
     Configure(cfg SkillConfig) error  // write drop-ins, record in ledger
     Watch(ctx context.Context) (<-chan Alert, error)
     Enabled()     bool
+
+    // Phase 3: Intel gathering for contact reports
+    GatherIntel(ctx context.Context, anomaly Anomaly) (Intel, error)
 }
 ```
 

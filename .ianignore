@@ -5,17 +5,17 @@ internal/
 go.mod
 go.sum
 
-# Build artifacts
-fogbot
-
 # Git
 .git/
 .gitignore
+.claude
 
-# Documentation
-*.md
-plan.md
-README.md
+CLAUDE.md
+docs
+Makefile
+
+# Config files moved to contrib - managed by postinst
+etc/
 
 # Docker
 Dockerfile
