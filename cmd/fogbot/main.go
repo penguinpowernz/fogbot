@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"sync"
+
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/baseline"
 	"github.com/penguinpowernz/fogbot/internal/config"
@@ -28,19 +30,18 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
 	"github.com/penguinpowernz/fogbot/internal/skills/suidsweep"
 	"github.com/spf13/cobra"
-	"sync"
 )
 
 var (
-	Version        = "dev"
-	BuildTime      = "unknown"
+	Version   = "dev"
+	BuildTime = "unknown"
 
-	configPath     string
-	stateDir       string
+	configPath      string
+	stateDir        string
 	skillsAvailable string
-	skillsEnabled  string
-	hostLabel      string
-	dryRun         bool
+	skillsEnabled   string
+	hostLabel       string
+	dryRun          bool
 )
 
 // initFlagsFromEnv initializes flag defaults from environment variables.
@@ -95,7 +96,7 @@ func main() {
 		Use:   "daemon",
 		Short: "Start the fogbot daemon",
 		Run:   runDaemon,
-		 PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return nil
 		},
 	})
@@ -197,7 +198,12 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(servicehealth.New())
 	registry.Register(auditdhealth.New())
 	registry.Register(dirwatch.New())
-	log.Printf("Skill registry initialized with %d skills", len(registry.All()))
+
+	// Log registered skills
+	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))
+	for _, skill := range registry.All() {
+		log.Printf("  - #%d: %s", skill.ID(), skill.Name())
+	}
 
 	// Build skills directories (CLI flags override env vars)
 	skillsAvailToUse := skillsAvailable
@@ -214,13 +220,16 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	skills.OverrideSkillsPaths(skillsAvailToUse, skillsEnabToUse)
 
 	// Load enabled skills from filesystem
+	log.Printf("Loading enabled skills from: %s", skillsEnabToUse)
 	enabledSkillConfigs, err := skills.LoadEnabledConfigs(skillsEnabToUse)
 	if err != nil {
 		log.Fatalf("Failed to load enabled skills: %v", err)
 	}
+	log.Printf("Found %d enabled skill configs", len(enabledSkillConfigs))
 
 	// Configure and enable skills based on loaded configs
 	for _, skillCfg := range enabledSkillConfigs {
+		log.Printf("Loading skill #%d (%s) from config file", skillCfg.ID, skillCfg.Name)
 		skill, ok := registry.Get(skillCfg.ID)
 		if !ok {
 			log.Printf("Warning: skill %d (%s) enabled but not in registry", skillCfg.ID, skillCfg.Name)
@@ -233,7 +242,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		}
 
 		skill.SetEnabled(true)
-		log.Printf("Enabled skill #%d: %s", skillCfg.ID, skillCfg.Name)
+		log.Printf("✓ Enabled skill #%d: %s", skillCfg.ID, skillCfg.Name)
 	}
 
 	// Start all enabled skills
@@ -268,7 +277,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		go mergeAndSendAlerts(ctx, alertChannels, dedupEngine, notif)
 	}
 
-// Send startup message
+	// Send startup message
 	if notif != nil && authState.IsAuthorized("") {
 		startupAlert := notifier.Alert{
 			Severity:  notifier.SeverityNominal,
@@ -318,7 +327,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 				// Send shutdown message
 				if notif != nil && authState.IsAuthorized("") {
 					shutdownAlert := notifier.Alert{
-						Severity:  notifier.SeverityNominal,
+						Severity:  notifier.SeverityMovement,
 						Title:     "fogbot offline",
 						Activity:  "Graceful shutdown",
 						Host:      machineHostname,
