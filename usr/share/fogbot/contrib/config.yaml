@@ -1,0 +1,37 @@
+# fogbot configuration
+
+telegram:
+  # Get your bot token from @BotFather on Telegram
+  token: "xxx"
+
+  # Chat ID will be set automatically after authorization
+  # Or you can hardcode it here if you know it
+  chat_id: 0
+
+# Label for this host in alerts
+host_label: "prod-web-01"
+
+# Quiet hours - suppress YELLOW alerts during this window
+# RED alerts always fire regardless
+quiet_hours:
+  enabled: false
+  start: "23:00"
+  end: "06:00"
+
+# Scheduled status reports
+status_report:
+  enabled: true
+  schedule: daily    # daily | weekly
+  time: "09:00"      # HH:MM 24h format
+  day: monday        # for weekly only: mon/tue/wed/thu/fri/sat/sun
+  timezone: "UTC"    # IANA timezone string
+
+# Alert deduplication and rate limiting
+dedup:
+  window: 300s       # 5 minutes
+  max_burst: 10      # max alerts per sensor per window
+
+# State directory (logs, baselines, ledger)
+state_dir: /var/lib/fogbot
+
+# tests

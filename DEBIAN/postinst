@@ -1,5 +1,74 @@
 #!/bin/bash
+set -e
 
-# your code goes here
+# fogbot debian package post-installation script
 
-exit 0;
+CONTRIB_DIR="/usr/share/fogbot/contrib"
+CONFIG_DIR="/etc/fogbot"
+STATE_DIR="/var/lib/fogbot"
+
+# Ensure configuration directory exists
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR/skills-enabled"
+
+# Copy config.yaml only if it doesn't exist
+if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+    echo "Installing default config.yaml..."
+    cp "$CONTRIB_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
+    # Set proper ownership
+    chown root:root "$CONFIG_DIR/config.yaml"
+    chmod 600 "$CONFIG_DIR/config.yaml"
+else
+    echo "Existing config.yaml found, not overwriting"
+fi
+
+# Ensure skills-available directory exists
+mkdir -p "$CONFIG_DIR/skills-available"
+
+# Copy any missing skill files from contrib
+# This allows new skills to be added on package upgrade without clobbering user edits
+echo "Checking for new skill definitions..."
+for skill_file in "$CONTRIB_DIR/skills-available"/*.yaml; do
+    if [ -f "$skill_file" ]; then
+        skill_name=$(basename "$skill_file")
+        dest_file="$CONFIG_DIR/skills-available/$skill_name"
+
+        if [ ! -f "$dest_file" ]; then
+            echo "  Installing new skill: $skill_name"
+            cp "$skill_file" "$dest_file"
+            chown root:root "$dest_file"
+            chmod 600 "$dest_file"
+        fi
+    fi
+done
+
+# Create state directory with proper permissions
+if [ ! -d "$STATE_DIR" ]; then
+    echo "Creating state directory..."
+    mkdir -p "$STATE_DIR"
+    mkdir -p "$STATE_DIR/baselines"
+    mkdir -p "$STATE_DIR/logs"
+    chown -R root:root "$STATE_DIR"
+    chmod 700 "$STATE_DIR"
+fi
+
+# Create systemd service if systemctl is available
+if command -v systemctl >/dev/null 2>&1; then
+    if [ -f /etc/systemd/system/fogbot.service ]; then
+        echo "Reloading systemd daemon..."
+        systemctl daemon-reload
+
+        # Only enable/start if user explicitly wants it
+        # Don't auto-start on fresh install
+        if systemctl is-enabled fogbot.service >/dev/null 2>&1; then
+            echo "fogbot service is enabled, restarting..."
+            systemctl restart fogbot.service || true
+        else
+            echo "Run 'systemctl enable --now fogbot' to start fogbot"
+        fi
+    fi
+fi
+
+echo "fogbot installation complete"
+
+exit 0
