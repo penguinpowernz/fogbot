@@ -17,13 +17,14 @@ RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=false
 ReadWritePaths=/var/lib/fogbot /var/log/fogbot
+ReadOnlyPaths=/home
 
 # Capabilities required for monitoring
-# Adjust based on enabled skills
-AmbientCapabilities=CAP_NET_ADMIN CAP_AUDIT_CONTROL CAP_SYS_PTRACE
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_AUDIT_CONTROL CAP_SYS_PTRACE
+# NOTE: Don't use CapabilityBoundingSet as it prevents fsnotify from working on home directories
+# Only set AmbientCapabilities for the specific caps we need
+# AmbientCapabilities=CAP_NET_ADMIN CAP_AUDIT_CONTROL CAP_SYS_PTRACE
 
 # Resource limits
 LimitNOFILE=65536
