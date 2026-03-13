@@ -99,8 +99,8 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 	// We want to listen to org.freedesktop.systemd1.Manager on /org/freedesktop/systemd1
 	matchRules := []string{
 		"type='signal',interface='org.freedesktop.systemd1.Manager',member='Reloading'",
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitNew'",
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitRemoved'",
+		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitNew'",
+		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitRemoved'",
 		"type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitFilesChanged'",
 	}
 
@@ -175,49 +175,49 @@ func (s *SystemdWatch) handleSignal(sig *dbus.Signal, alerts chan<- notifier.Ale
 			}
 		}
 
-	case "org.freedesktop.systemd1.Manager.UnitNew":
-		// UnitNew: new unit loaded (has unit name and object path)
-		if len(sig.Body) >= 2 {
-			unitName := fmt.Sprintf("%v", sig.Body[0])
-			log.Printf("[systemd-watch] New unit loaded: %s", unitName)
-			alert = notifier.Alert{
-				Severity:  notifier.SeverityContact,
-				SkillID:   SkillID,
-				SkillName: SkillName,
-				Title:     "New systemd unit loaded",
-				Activity:  fmt.Sprintf("Unit loaded: %s", unitName),
-				Location:  "systemd",
-				Unit:      unitName,
-				Time:      time.Now(),
-				Equipment: "systemd-unit",
-				Metadata: map[string]string{
-					"event":     "unit-new",
-					"unit_name": unitName,
-				},
-			}
-		}
+	// case "org.freedesktop.systemd1.Manager.UnitNew":
+	// 	// UnitNew: new unit loaded (has unit name and object path)
+	// 	if len(sig.Body) >= 2 {
+	// 		unitName := fmt.Sprintf("%v", sig.Body[0])
+	// 		log.Printf("[systemd-watch] New unit loaded: %s", unitName)
+	// 		alert = notifier.Alert{
+	// 			Severity:  notifier.SeverityContact,
+	// 			SkillID:   SkillID,
+	// 			SkillName: SkillName,
+	// 			Title:     "New systemd unit loaded",
+	// 			Activity:  fmt.Sprintf("Unit loaded: %s", unitName),
+	// 			Location:  "systemd",
+	// 			Unit:      unitName,
+	// 			Time:      time.Now(),
+	// 			Equipment: "systemd-unit",
+	// 			Metadata: map[string]string{
+	// 				"event":     "unit-new",
+	// 				"unit_name": unitName,
+	// 			},
+	// 		}
+	// 	}
 
-	case "org.freedesktop.systemd1.Manager.UnitRemoved":
-		// UnitRemoved: unit unloaded (has unit name and object path)
-		if len(sig.Body) >= 2 {
-			unitName := fmt.Sprintf("%v", sig.Body[0])
-			log.Printf("[systemd-watch] Unit removed: %s", unitName)
-			alert = notifier.Alert{
-				Severity:  notifier.SeverityMovement,
-				SkillID:   SkillID,
-				SkillName: SkillName,
-				Title:     "systemd unit removed",
-				Activity:  fmt.Sprintf("Unit unloaded: %s", unitName),
-				Location:  "systemd",
-				Unit:      unitName,
-				Time:      time.Now(),
-				Equipment: "systemd-unit",
-				Metadata: map[string]string{
-					"event":     "unit-removed",
-					"unit_name": unitName,
-				},
-			}
-		}
+	// case "org.freedesktop.systemd1.Manager.UnitRemoved":
+	// 	// UnitRemoved: unit unloaded (has unit name and object path)
+	// 	if len(sig.Body) >= 2 {
+	// 		unitName := fmt.Sprintf("%v", sig.Body[0])
+	// 		log.Printf("[systemd-watch] Unit removed: %s", unitName)
+	// 		alert = notifier.Alert{
+	// 			Severity:  notifier.SeverityMovement,
+	// 			SkillID:   SkillID,
+	// 			SkillName: SkillName,
+	// 			Title:     "systemd unit removed",
+	// 			Activity:  fmt.Sprintf("Unit unloaded: %s", unitName),
+	// 			Location:  "systemd",
+	// 			Unit:      unitName,
+	// 			Time:      time.Now(),
+	// 			Equipment: "systemd-unit",
+	// 			Metadata: map[string]string{
+	// 				"event":     "unit-removed",
+	// 				"unit_name": unitName,
+	// 			},
+	// 		}
+	// 	}
 
 	case "org.freedesktop.systemd1.Manager.UnitFilesChanged":
 		// UnitFilesChanged: unit files on disk changed
