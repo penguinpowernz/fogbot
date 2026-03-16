@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -193,7 +194,13 @@ func generateCode() string {
 	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no ambiguous chars
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
-		panic(err) // crypto/rand failure is fatal
+		// crypto/rand failure is extremely rare but fatal
+		// Log and use a fallback (time-based entropy is weak but better than crashing)
+		log.Printf("CRITICAL: crypto/rand.Read failed: %v - using fallback", err)
+		// Use time-based fallback (not cryptographically secure but avoids crash)
+		for i := range buf {
+			buf[i] = byte(time.Now().UnixNano() >> (i * 8))
+		}
 	}
 
 	code := make([]byte, 8)

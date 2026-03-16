@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -176,7 +177,11 @@ func (c *Config) GetHostLabel() string {
 		if envLabel := os.Getenv("FOGBOT_HOST_LABEL"); envLabel != "" {
 			return envLabel
 		}
-		hostname, _ := os.Hostname()
+		hostname, err := os.Hostname()
+		if err != nil {
+			log.Printf("Failed to get hostname: %v, using 'unknown'", err)
+			return "unknown"
+		}
 		return hostname
 	}
 	return c.HostLabel

@@ -120,11 +120,19 @@ func (t *Tracker) RevokeSkill(skillID int) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Collect hashes to delete first, then delete them
+	// This avoids modifying the map while iterating over it
+	toDelete := make([]string, 0)
 	for hash, approval := range t.approvals {
 		if approval.SkillID == skillID {
-			delete(t.approvals, hash)
+			toDelete = append(toDelete, hash)
 		}
 	}
+
+	for _, hash := range toDelete {
+		delete(t.approvals, hash)
+	}
+
 	return t.save()
 }
 

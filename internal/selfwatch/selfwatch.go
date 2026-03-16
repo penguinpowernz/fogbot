@@ -45,6 +45,8 @@ func (s *SelfWatch) Watch(ctx context.Context, hostname string) (<-chan notifier
 
 	// Add watches
 	if err := s.addWatches(); err != nil {
+		// Clean up watcher on error
+		s.watcher.Close()
 		return nil, fmt.Errorf("adding watches: %w", err)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -308,7 +309,11 @@ func (t *Telegram) makeAckButton(skillID int) string {
 		},
 	}
 
-	data, _ := json.Marshal(keyboard)
+	data, err := json.Marshal(keyboard)
+	if err != nil {
+		log.Printf("Failed to marshal keyboard JSON: %v", err)
+		return ""
+	}
 	return string(data)
 }
 

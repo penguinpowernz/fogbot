@@ -43,6 +43,8 @@ var (
 	skillsEnabled   string
 	hostLabel       string
 	dryRun          bool
+
+	daemonStartTime time.Time // Track when daemon started for uptime reporting
 )
 
 // initFlagsFromEnv initializes flag defaults from environment variables.
@@ -112,6 +114,7 @@ func main() {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) {
+	daemonStartTime = time.Now() // Record start time for uptime tracking
 	log.Printf("fogbot %s starting...", Version)
 
 	// Build config path (CLI flag overrides env var)
@@ -547,8 +550,8 @@ func handleReset(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 
 func handlePing(ctx context.Context, cmd notifier.Command, machineHostname string, notif notifier.Notifier) {
 	log.Printf("Ping from authorized chat %s", cmd.ChatID)
-	uptime := time.Since(time.Now()) // TODO: track actual start time
-	msg := fmt.Sprintf("🟢 fogbot online\n\nHost: %s\nUptime: %s", machineHostname, uptime)
+	uptime := time.Since(daemonStartTime)
+	msg := fmt.Sprintf("🟢 fogbot online\n\nHost: %s\nUptime: %s", machineHostname, uptime.Round(time.Second))
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
