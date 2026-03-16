@@ -94,7 +94,7 @@ etc/fogbot/
 │   ├── 400-log-freshness.yaml
 │   ├── 410-service-health.yaml
 │   ├── 420-auditd-health.yaml
-│   ├── 500-passwd-watch.yaml
+│   ├── 500-file-watch.yaml
 │   ├── 510-port-tripwires.yaml
 │   ├── 520-cron-watch.yaml
 │   ├── 530-fs-anomaly.yaml

@@ -125,7 +125,7 @@ Architectural decisions (interfaces, package structure, config format) are estab
 ## Phase 4 — System-Level Skills (require system config / drop-ins)
 *Goal: expand coverage using auditd and iptables. fogbot now writes drop-in configs and tracks them in the ledger.*
 
-- [ ] `internal/skills/500-passwd-watch/` — auditd drop-in: watch `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, SSH config, PAM
+- [ ] `internal/skills/500-file-watch/` — auditd drop-in: watch `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, SSH config, PAM
 - [ ] `internal/skills/510-port-tripwires/` — iptables drop-in: LOG rules for C2/malware ports inbound + outbound, `/proc/net/tcp` correlation
 - [ ] `internal/skills/520-cron-watch/` — inotify: `/etc/cron*`, `/var/spool/cron`, `/etc/systemd/system/`, rc.local
 - [ ] `internal/skills/530-fs-anomaly/` — inotify: hidden files/dirs, `/etc/ld.so.preload`, immutable flag, large staging files
@@ -140,7 +140,7 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - [ ] Startup rule verification for all active system-config skills — query actual state, diff, re-apply missing rules, log to ledger, alert if anything was missing
 - [ ] `/var/lib/fogbot/skills/<id>.state.json` — persist expected rule state per skill at enable time
 
-**Exit criteria:** `fogbot skill enable 500-passwd-watch` shows commands and prompts for approval before writing drop-in. On next startup with the drop-in deleted, fogbot detects it missing, re-applies it, logs the repair, and sends a 🟡 MOVEMENT alert. rkhunter/chkrootkit skills parse logs if tools are present, skip cleanly if not. Self-watch automatically extends to cover new drop-in files as each skill is enabled.
+**Exit criteria:** `fogbot skill enable 500-file-watch` shows commands and prompts for approval before writing drop-in. On next startup with the drop-in deleted, fogbot detects it missing, re-applies it, logs the repair, and sends a 🟡 MOVEMENT alert. rkhunter/chkrootkit skills parse logs if tools are present, skip cleanly if not. Self-watch automatically extends to cover new drop-in files as each skill is enabled.
 
 ---
 

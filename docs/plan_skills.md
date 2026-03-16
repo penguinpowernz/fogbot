@@ -16,7 +16,7 @@ Skills live in `/etc/fogbot/skills-available/` and are enabled by symlinking int
 │   ├── 400-log-freshness.yaml
 │   ├── 410-service-health.yaml
 │   ├── 420-auditd-health.yaml
-│   ├── 500-passwd-watch.yaml
+│   ├── 500-file-watch.yaml
 │   ├── 510-port-tripwires.yaml
 │   ├── 520-cron-watch.yaml
 │   ├── 530-fs-anomaly.yaml
@@ -107,7 +107,7 @@ Tab completion is provided for `enable` and `disable` — `enable` completes fro
  400  log-freshness      disabled  inotify               [DEADMAN] Logs not written within N minutes
  410  service-health     disabled  systemd               [DEADMAN] Configured services stopped
  420  auditd-health      enabled   auditd                [DEADMAN] auditd stopped or log gone stale
- 500  passwd-watch       disabled  auditd, root          /etc/passwd, shadow, sudoers reads/writes
+ 500  file-watch       disabled  auditd, root          /etc/passwd, shadow, sudoers reads/writes
  510  port-tripwires     disabled  iptables, root        C2/malware port traffic (inbound + outbound)
  520  cron-watch         disabled  inotify               New crontab entries, systemd timers
  530  fs-anomaly         disabled  inotify, root         Hidden files, ld.so.preload, immutable flag
@@ -129,7 +129,7 @@ Skills marked **[DEADMAN]** alert when expected activity *stops* rather than whe
 ## Detection Sensors ("OPs") — Detailed Descriptions
 
 ### 1. File Integrity Watcher (`auditd` + inotify)
-**Skill ID:** 500 (passwd-watch)
+**Skill ID:** 500 (file-watch)
 **Analogy: Tripwire across a known trail**
 
 Configures `auditd` rules at startup to watch specified files and directories. Reports on:
@@ -397,7 +397,7 @@ fogbot never modifies files it doesn't own. All system tool configuration is don
 
 | Tool | Drop-in location | Example file |
 |------|-----------------|--------------|
-| auditd | `/etc/audit/rules.d/` | `90-fogbot-passwd-watch.rules` |
+| auditd | `/etc/audit/rules.d/` | `90-fogbot-file-watch.rules` |
 | iptables | `/etc/iptables/rules.d/` | `90-fogbot-port-tripwires.rules` |
 | rsyslog | `/etc/rsyslog.d/` | `90-fogbot.conf` |
 | logrotate | `/etc/logrotate.d/` | `fogbot` |

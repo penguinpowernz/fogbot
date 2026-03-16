@@ -11,6 +11,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/approval"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
+	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/spf13/cobra"
@@ -235,6 +236,8 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 	// Match skill by ID to instantiate the right implementation
 	switch cfg.ID {
+	case 500:
+		return filewatch.New(cfg)
 	case 510:
 		return porttripwires.New(cfg)
 	case 540:

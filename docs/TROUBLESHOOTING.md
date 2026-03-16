@@ -202,7 +202,7 @@ environment:
 Look for logs like:
 ```
 [DRY-RUN] Would write to /etc/iptables/rules.d/90-fogbot-port-tripwires.rules
-[DRY-RUN] Would remove /etc/audit/rules.d/90-fogbot-passwd-watch.rules
+[DRY-RUN] Would remove /etc/audit/rules.d/90-fogbot-file-watch.rules
 ```
 
 ---

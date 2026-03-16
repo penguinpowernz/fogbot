@@ -28,7 +28,7 @@ fogbot/
 │   │   ├── 400-log-freshness/   # Go impl: deadman log freshness
 │   │   ├── 410-service-health/  # Go impl: deadman systemd service check
 │   │   ├── 420-auditd-health/   # Go impl: deadman auditd check
-│   │   ├── 500-passwd-watch/    # Go impl: auditd log tailer
+│   │   ├── 500-file-watch/    # Go impl: auditd log tailer
 │   │   ├── 510-port-tripwires/  # Go impl: iptables log parser
 │   │   ├── 520-cron-watch/      # Go impl: inotify on cron paths
 │   │   ├── 530-fs-anomaly/      # Go impl: inotify filesystem anomalies
@@ -56,7 +56,7 @@ fogbot/
 │   ├── 400-log-freshness.yaml
 │   ├── 410-service-health.yaml
 │   ├── 420-auditd-health.yaml
-│   ├── 500-passwd-watch.yaml
+│   ├── 500-file-watch.yaml
 │   ├── 510-port-tripwires.yaml
 │   ├── 520-cron-watch.yaml
 │   ├── 530-fs-anomaly.yaml
@@ -183,8 +183,8 @@ CLI talks to the running daemon via a Unix socket at `/run/fogbot/fogbot.sock` f
 Append-only log at `/var/lib/fogbot/changes.log`. Every config change fogbot makes — drop-in written, skill enabled/disabled, baseline approved — is recorded here.
 
 ```
-2024-01-15T03:40:00Z  ENABLE   skill=passwd-watch       dropin=/etc/audit/rules.d/90-fogbot-passwd-watch.rules
-2024-01-15T03:40:00Z  WRITE    file=/etc/audit/rules.d/90-fogbot-passwd-watch.rules  sha256=a3f9...
+2024-01-15T03:40:00Z  ENABLE   skill=file-watch       dropin=/etc/audit/rules.d/90-fogbot-file-watch.rules
+2024-01-15T03:40:00Z  WRITE    file=/etc/audit/rules.d/90-fogbot-file-watch.rules  sha256=a3f9...
 2024-01-15T09:12:33Z  DISABLE  skill=fs-anomaly          dropin=/etc/iptables/rules.d/90-fogbot-fs-anomaly.rules  (removed)
 2024-01-15T11:04:01Z  APPROVE  baseline=suid             file=/var/lib/fogbot/suid_baseline.json
 2024-01-16T08:00:00Z  CONFIG   skill=port-tripwires      changed=watch_inbound  old="135 139 445" new="135 139 445 12345"

@@ -200,6 +200,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(auditdhealth.New())
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
+	// Note: filewatch skill requires config from YAML, registered in CLI command
 
 	// Log registered skills
 	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))

@@ -91,12 +91,12 @@ Configuration via environment variables:
 | 400 | log-freshness     | Detect stale/tampered log files                      | ✅   |        |
 | 410 | service-health    | Monitor critical systemd services                    | ✅   | ✅     |
 | 420 | auditd-health     | Ensure auditd is running                             | ✅   |        |
-| 500 | passwd-watch      | Detect changes to /etc/passwd, /etc/shadow           | ❌   |        |
+| 500 | file-watch        | Watch critical system files (passwd, shadow, etc)    | ❌   |        |
 | 510 | port-tripwires    | Alert on connections to specific closed ports        | ✅   |        |
 | 520 | cron-watch        | Monitor cron file changes                            | ❌   |        |
 | 530 | fs-anomaly        | Filesystem integrity monitoring                      | ❌   |        |
 | 540 | dir-watch         | Watch directories for new files                      | ✅   |  ✅    |
-| 550 | systemd-watch     | Detect daemon-reload and unit changes via D-Bus      | ✅   |        |
+| 550 | systemd-watch     | Detect daemon-reload and unit changes via D-Bus      | ✅   |  ✅    |
 | 600 | rkhunter          | Rootkit detection wrapper                            | ❌   |        |
 | 610 | chkrootkit        | Rootkit detection wrapper                            | ❌   |        |
 | 700 | kernel-mod        | Alert on kernel module loads                         | ❌   |        |
@@ -130,7 +130,7 @@ Configuration via environment variables:
 **Phase 2 - Skill Implementation:**
 - ✅ 10 skills with full implementations (ssh-monitor, suid-sweep, proc-exec, pkg-monitor, log-freshness, service-health, auditd-health, port-tripwires, dir-watch, systemd-watch)
 - 🔄 Testing and debugging active skills
-- 🔄 Implementing remaining skills (passwd-watch, cron-watch, fs-anomaly, kernel-mod, net-watch, etc.)
+- 🔄 Implementing remaining skills (file-watch, cron-watch, fs-anomaly, kernel-mod, net-watch, etc.)
 - 🔄 Integrating skills with Telegram alert pipeline
 - ✅ Self-watch monitoring (fogbot monitors its own binary and config files)
 
