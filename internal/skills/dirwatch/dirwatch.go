@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
@@ -19,15 +20,15 @@ const (
 	SkillName = "dir-watch"
 )
 
-// DirWatch monitors configured directories for new files and subdirectories
+// DirWatch monitors configured directories using auditd
 type DirWatch struct {
-	mu          sync.RWMutex
-	enabled     bool
-	config      map[string]interface{}
-	watchPaths  []string
-	recursive   bool
-	globFilter  string
-	whitelist   map[string]bool
+	mu         sync.RWMutex
+	enabled    bool
+	config     map[string]interface{}
+	watchPaths []string
+	recursive  bool
+	globFilter string
+	whitelist  map[string]bool
 }
 
 // New creates a DirWatch with default config (used by daemon registry).
@@ -76,21 +77,17 @@ func (d *DirWatch) applyConfig(cfg map[string]interface{}) {
 	}
 }
 
-func (d *DirWatch) ID() int          { return SkillID }
-func (d *DirWatch) Name() string     { return SkillName }
+func (d *DirWatch) ID() int      { return SkillID }
+func (d *DirWatch) Name() string { return SkillName }
 func (d *DirWatch) Description() string {
-	return "Alert on new files/directories added to watched folders"
+	return "Alert on new files/directories added to watched folders using auditd"
 }
 func (d *DirWatch) Why() string {
-	return "New files in sensitive directories outside maintenance windows indicate delivery or persistence activity."
+	return "New files in sensitive directories outside maintenance windows indicate delivery or persistence activity. Using auditd provides user/process context that inotify cannot."
 }
-func (d *DirWatch) Requires() []string             { return []string{"inotify"} }
-func (d *DirWatch) Tags() []string                 { return []string{"filesystem", "persistence", "delivery"} }
-func (d *DirWatch) DropIns() []skills.DropIn       { return nil }
-func (d *DirWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
-	return []skills.SystemCommand{}, nil
-}
-func (d *DirWatch) CheckSystemState() (bool, error) { return true, nil }
+func (d *DirWatch) Requires() []string        { return []string{"auditd", "root"} }
+func (d *DirWatch) Tags() []string            { return []string{"filesystem", "persistence", "delivery", "auditd"} }
+func (d *DirWatch) DropIns() []skills.DropIn  { return nil }
 
 func (d *DirWatch) Enabled() bool {
 	d.mu.RLock()
@@ -121,62 +118,144 @@ func (d *DirWatch) Configure(cfg map[string]interface{}) error {
 	return nil
 }
 
-func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
-	log.Printf("[dir-watch] Watch() called - starting watcher")
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("creating inotify watcher: %w", err)
-	}
+// generateRuleKey creates an audit rule key based on skill ID
+func (d *DirWatch) generateRuleKey() string {
+	// Use fb-dir-<skillID> format (e.g., fb-dir-540)
+	return fmt.Sprintf("fb-dir-%d", SkillID)
+}
 
-	d.mu.RLock()
-	paths := make([]string, len(d.watchPaths))
-	copy(paths, d.watchPaths)
-	recursive := d.recursive
-	d.mu.RUnlock()
+// DeduceCommands generates auditctl commands from the declarative config
+func (d *DirWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
+	commands := []skills.SystemCommand{}
 
-	log.Printf("[dir-watch] Will watch %d paths: %v", len(paths), paths)
-
-	// Add paths to watcher
-	for _, p := range paths {
-		if err := d.addPath(watcher, p, recursive); err != nil {
-			log.Printf("[dir-watch] Warning: could not watch %s: %v", p, err)
-		} else {
-			log.Printf("[dir-watch] ✓ Watching %s (recursive=%v)", p, recursive)
+	// Extract watch paths from config
+	var watchPaths []string
+	if paths, ok := cfg["watch_paths"].([]interface{}); ok {
+		for _, p := range paths {
+			if s, ok := p.(string); ok {
+				watchPaths = append(watchPaths, s)
+			}
 		}
 	}
 
+	if len(watchPaths) == 0 {
+		return nil, fmt.Errorf("no watch_paths configured")
+	}
+
+	// Generate non-obvious rule key
+	ruleKey := d.generateRuleKey()
+
+	// Build auditctl commands for each path
+	// Use -p wa to watch for write and attribute changes (create, rename, chmod, etc.)
+	for _, path := range watchPaths {
+		cmd := fmt.Sprintf("auditctl -w %s -p wa -k %s", path, ruleKey)
+
+		commands = append(commands, skills.SystemCommand{
+			Command:     cmd,
+			Description: fmt.Sprintf("Monitor %s for file creation/modification", path),
+			Metadata: map[string]string{
+				"rule_key": ruleKey,
+				"path":     path,
+				"perms":    "wa",
+			},
+		})
+	}
+
+	return commands, nil
+}
+
+// CheckSystemState verifies if auditd rules are already configured
+func (d *DirWatch) CheckSystemState() (bool, error) {
+	// Get current audit rules
+	cmd := exec.Command("auditctl", "-l")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("failed to check auditd rules: %w (output: %s)", err, string(output))
+	}
+
+	rulesOutput := string(output)
+
+	// Generate the rule key we expect to find
+	ruleKey := d.generateRuleKey()
+
+	// Get watch paths from config
+	d.mu.RLock()
+	watchPaths := make([]string, len(d.watchPaths))
+	copy(watchPaths, d.watchPaths)
+	d.mu.RUnlock()
+
+	// Check if all expected paths are monitored with our rule key
+	// Each rule should be on its own line
+	for _, path := range watchPaths {
+		// Look for lines like: -w /usr/local/bin/ -p wa -k fb-dir-540
+		// Match the exact rule pattern to avoid false positives
+		rulePattern := fmt.Sprintf("-w %s -p wa -k %s", path, ruleKey)
+		if !strings.Contains(rulesOutput, rulePattern) {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// Watch monitors audit logs for file creation/modification events
+func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
+	log.Printf("[dir-watch] Watch() called - starting auditd watcher")
+
 	alerts := make(chan notifier.Alert, 10)
-	log.Printf("[dir-watch] Event loop starting, monitoring for CREATE|RENAME|WRITE events")
+
+	// Get the shared global audit tailer
+	tailer, err := auditlog.GetGlobalTailer()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get audit tailer: %w", err)
+	}
+
+	// Start the tailer (safe to call multiple times)
+	if err := auditlog.StartGlobalTailer(); err != nil {
+		return nil, fmt.Errorf("failed to start audit tailer: %w", err)
+	}
+
+	ruleKey := d.generateRuleKey()
+	auditEvents := make(chan auditlog.Event, 100)
+
+	// Subscribe to our rule key
+	tailer.Subscribe(ruleKey, auditEvents)
+
+	log.Printf("[dir-watch] Subscribed to audit events with key: %s", ruleKey)
 
 	go func() {
 		defer close(alerts)
-		defer watcher.Close()
+		defer tailer.Unsubscribe(ruleKey, auditEvents)
+
+		// Track recently seen events to avoid duplicates (audit logs are verbose)
+		seen := make(map[string]time.Time)
+		cleanupTicker := time.NewTicker(1 * time.Minute)
+		defer cleanupTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 
-			case event, ok := <-watcher.Events:
+			case <-cleanupTicker.C:
+				// Clean up old entries from seen map
+				cutoff := time.Now().Add(-2 * time.Minute)
+				for k, t := range seen {
+					if t.Before(cutoff) {
+						delete(seen, k)
+					}
+				}
+
+			case event, ok := <-auditEvents:
 				if !ok {
 					return
 				}
 
-				log.Printf("[dir-watch] Event received: %s %s", event.Op, event.Name)
+				log.Printf("[dir-watch] Received audit event: type=%s, name=%s, uid=%s, comm=%s, exe=%s",
+					event.RecordType, event.Name, event.UID, event.Comm, event.Exe)
 
-				// Care about new entries, renames, and modifications
-				if event.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Write) != 0 {
-					log.Printf("[dir-watch] Processing event (matched filter)")
-					d.handleEvent(event.Name, event.Op, watcher, recursive, alerts)
-				} else {
-					log.Printf("[dir-watch] Ignoring event (not CREATE|RENAME|WRITE)")
-				}
-
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				log.Printf("[dir-watch] Watcher error: %v", err)
+				// Process the event
+				d.handleAuditEvent(event, alerts, seen)
 			}
 		}
 	}()
@@ -184,26 +263,19 @@ func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 	return alerts, nil
 }
 
-func (d *DirWatch) addPath(watcher *fsnotify.Watcher, path string, recursive bool) error {
-	if err := watcher.Add(path); err != nil {
-		return err
+func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier.Alert, seen map[string]time.Time) {
+	// Extract the file path and name
+	path := event.Path
+	if path == "" && event.Name != "" {
+		path = event.Name
 	}
 
-	if recursive {
-		return filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-			if err != nil || !info.IsDir() || p == path {
-				return nil
-			}
-			return watcher.Add(p)
-		})
+	if path == "" {
+		log.Printf("[dir-watch] Skipping event with no path/name")
+		return
 	}
 
-	return nil
-}
-
-func (d *DirWatch) handleEvent(path string, op fsnotify.Op, watcher *fsnotify.Watcher, recursive bool, alerts chan<- notifier.Alert) {
 	name := filepath.Base(path)
-	log.Printf("[dir-watch] handleEvent: path=%s, op=%s, name=%s", path, op, name)
 
 	// Check whitelist
 	d.mu.RLock()
@@ -225,76 +297,75 @@ func (d *DirWatch) handleEvent(path string, op fsnotify.Op, watcher *fsnotify.Wa
 		}
 	}
 
-	// Stat the new entry
-	info, err := os.Lstat(path)
-	if err != nil {
-		// File may have been removed immediately after creation (e.g. tmp files)
-		log.Printf("[dir-watch] Could not stat %s: %v (may have been deleted)", path, err)
-		return
-	}
-	log.Printf("[dir-watch] File stat successful: %s (mode=%04o, isDir=%v)", path, info.Mode().Perm(), info.IsDir())
-
-	// If it's a new directory and recursive mode is on, watch it too
-	if info.IsDir() && recursive {
-		if err := watcher.Add(path); err != nil {
-			log.Printf("[dir-watch] Failed to watch new dir %s: %v", path, err)
+	// Deduplicate: use path+uid+comm as key to avoid duplicate alerts
+	// Audit logs can have multiple records for the same operation
+	dedupeKey := fmt.Sprintf("%s:%s:%s", path, event.UID, event.Comm)
+	if lastSeen, ok := seen[dedupeKey]; ok {
+		if time.Since(lastSeen) < 5*time.Second {
+			log.Printf("[dir-watch] Deduplicating recent event for %s", path)
+			return
 		}
 	}
+	seen[dedupeKey] = time.Now()
 
+	// Determine file type from syscall or metadata
 	kind := "file"
-	if info.IsDir() {
-		kind = "directory"
-	}
-
-	executable := info.Mode()&0111 != 0
-
-	owner := fmt.Sprintf("mode=%04o", info.Mode().Perm())
-	equip := kind
-	if executable {
-		equip = kind + " (executable)"
-	}
-
-	// Determine operation type and alert details
-	var operation, title, activity string
-	severity := notifier.SeverityContact
-
-	if op&fsnotify.Write != 0 {
-		operation = "modified"
-		title = "File Modified in Watched Directory"
-		activity = fmt.Sprintf("File modified: %s", name)
-		severity = notifier.SeverityMovement // modifications are more concerning
-	} else if op&fsnotify.Rename != 0 {
-		operation = "renamed"
-		title = "File Renamed in Watched Directory"
-		activity = fmt.Sprintf("File renamed: %s", name)
-	} else {
-		operation = "created"
-		title = "New Entry in Watched Directory"
-		activity = fmt.Sprintf("New %s created: %s", kind, name)
-		if info.IsDir() {
-			severity = notifier.SeverityMovement
-			title = "New Directory in Watched Path"
+	if event.Metadata["mode"] != "" {
+		// Parse mode to determine if directory
+		// This is simplified - in reality we'd parse the octal mode
+		if strings.Contains(event.Metadata["mode"], "040") {
+			kind = "directory"
 		}
 	}
+
+	// Build activity description with process context
+	activity := fmt.Sprintf("New %s: %s", kind, name)
+	if event.Comm != "" {
+		activity = fmt.Sprintf("%s (by: %s)", activity, event.Comm)
+	}
+	if event.UID != "" {
+		activity = fmt.Sprintf("%s [uid=%s]", activity, event.UID)
+	}
+
+	// Determine severity
+	severity := notifier.SeverityContact
+	if kind == "directory" {
+		severity = notifier.SeverityMovement
+	}
+
+	// Build equipment description with process info
+	equip := kind
+	if event.Exe != "" {
+		equip = fmt.Sprintf("%s (exe: %s)", kind, event.Exe)
+	}
+
+	// Build location from path
+	location := filepath.Dir(path)
 
 	alert := notifier.Alert{
 		Severity:  severity,
 		SkillID:   SkillID,
 		SkillName: SkillName,
-		Title:     title,
+		Title:     "New Entry in Watched Directory",
 		Size:      "1 " + kind,
 		Activity:  activity,
-		Location:  filepath.Dir(path),
-		Unit:      owner,
-		Time:      time.Now(),
+		Location:  location,
+		Unit:      fmt.Sprintf("uid=%s pid=%s", event.UID, event.PID),
+		Time:      event.Timestamp,
 		Equipment: equip,
 		Metadata: map[string]string{
-			"path":       path,
-			"kind":       kind,
-			"operation":  operation,
-			"executable": fmt.Sprintf("%v", executable),
+			"path":    path,
+			"kind":    kind,
+			"uid":     event.UID,
+			"auid":    event.AUID,
+			"pid":     event.PID,
+			"ppid":    event.PPID,
+			"comm":    event.Comm,
+			"exe":     event.Exe,
+			"syscall": event.Syscall,
 		},
 	}
+
 	log.Printf("[dir-watch] Sending alert: %s - %s", alert.Title, alert.Activity)
 	alerts <- alert
 }

@@ -3,9 +3,13 @@ package filewatch
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
@@ -155,10 +159,32 @@ func (f *FileWatch) CheckSystemState() (bool, error) {
 		return false, fmt.Errorf("invalid watch_paths config: %w", err)
 	}
 
+	// Build permission string to match what we generate in DeduceCommands
+	alertOnRead := getBool(f.config, "alert_on_read", false)
+	alertOnWrite := getBool(f.config, "alert_on_write", true)
+	alertOnExecute := getBool(f.config, "alert_on_execute", true)
+	alertOnAttribute := getBool(f.config, "alert_on_attribute", true)
+
+	perms := ""
+	if alertOnWrite {
+		perms += "w"
+	}
+	if alertOnAttribute {
+		perms += "a"
+	}
+	if alertOnRead {
+		perms += "r"
+	}
+	if alertOnExecute {
+		perms += "x"
+	}
+
 	// Check if all expected paths are monitored with our rule key
 	for _, path := range watchPaths {
-		// Look for lines like: -w /etc/passwd -p wa -k fogbot-file-500
-		if !strings.Contains(rulesOutput, path) || !strings.Contains(rulesOutput, ruleKey) {
+		// Look for exact match: -w /etc/passwd -p warx -k fb-file-500
+		// This avoids false positives from substring matches
+		rulePattern := fmt.Sprintf("-w %s -p %s -k %s", path, perms, ruleKey)
+		if !strings.Contains(rulesOutput, rulePattern) {
 			return false, nil
 		}
 	}
@@ -168,17 +194,161 @@ func (f *FileWatch) CheckSystemState() (bool, error) {
 
 // Watch monitors audit logs for file access events
 func (f *FileWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
-	alerts := make(chan notifier.Alert)
+	log.Printf("[file-watch] Watch() called - starting auditd watcher")
+
+	alerts := make(chan notifier.Alert, 10)
+
+	// Get the shared global audit tailer
+	tailer, err := auditlog.GetGlobalTailer()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get audit tailer: %w", err)
+	}
+
+	// Start the tailer (safe to call multiple times)
+	if err := auditlog.StartGlobalTailer(); err != nil {
+		return nil, fmt.Errorf("failed to start audit tailer: %w", err)
+	}
+
+	ruleKey := f.generateRuleKey()
+	auditEvents := make(chan auditlog.Event, 100)
+
+	// Subscribe to our rule key
+	tailer.Subscribe(ruleKey, auditEvents)
+
+	log.Printf("[file-watch] Subscribed to audit events with key: %s", ruleKey)
 
 	go func() {
 		defer close(alerts)
-		// TODO: Implement audit log watching
-		// This will monitor ausearch or journalctl for events matching our rule key
-		// Parse audit events and generate SALUTE-formatted alerts
-		<-ctx.Done()
+		defer tailer.Unsubscribe(ruleKey, auditEvents)
+
+		// Track recently seen events to avoid duplicates
+		seen := make(map[string]time.Time)
+		cleanupTicker := time.NewTicker(1 * time.Minute)
+		defer cleanupTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case <-cleanupTicker.C:
+				// Clean up old entries from seen map
+				cutoff := time.Now().Add(-2 * time.Minute)
+				for k, t := range seen {
+					if t.Before(cutoff) {
+						delete(seen, k)
+					}
+				}
+
+			case event, ok := <-auditEvents:
+				if !ok {
+					return
+				}
+
+				log.Printf("[file-watch] Received audit event: type=%s, name=%s, uid=%s, comm=%s, exe=%s",
+					event.RecordType, event.Name, event.UID, event.Comm, event.Exe)
+
+				// Process the event
+				f.handleAuditEvent(event, alerts, seen)
+			}
+		}
 	}()
 
 	return alerts, nil
+}
+
+func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier.Alert, seen map[string]time.Time) {
+	// Extract the file path
+	path := event.Path
+	if path == "" && event.Name != "" {
+		path = event.Name
+	}
+
+	if path == "" {
+		log.Printf("[file-watch] Skipping event with no path/name")
+		return
+	}
+
+	// Deduplicate: use path+uid+syscall as key
+	// Audit logs generate multiple records per operation
+	dedupeKey := fmt.Sprintf("%s:%s:%s", path, event.UID, event.Syscall)
+	if lastSeen, ok := seen[dedupeKey]; ok {
+		if time.Since(lastSeen) < 5*time.Second {
+			log.Printf("[file-watch] Deduplicating recent event for %s", path)
+			return
+		}
+	}
+	seen[dedupeKey] = time.Now()
+
+	// Determine operation type from syscall or metadata
+	operation := "accessed"
+	if event.Syscall != "" {
+		switch event.Syscall {
+		case "open", "openat":
+			operation = "opened"
+		case "unlink", "unlinkat":
+			operation = "deleted"
+		case "rename", "renameat":
+			operation = "renamed"
+		case "chmod", "fchmod":
+			operation = "permissions changed"
+		case "chown", "fchown":
+			operation = "ownership changed"
+		}
+	}
+
+	// Build activity description with process context
+	name := filepath.Base(path)
+	activity := fmt.Sprintf("File %s: %s", operation, name)
+	if event.Comm != "" {
+		activity = fmt.Sprintf("%s (by: %s)", activity, event.Comm)
+	}
+	if event.UID != "" {
+		activity = fmt.Sprintf("%s [uid=%s]", activity, event.UID)
+	}
+
+	// Determine severity based on file and operation
+	severity := f.severityDefault
+	if severity == "" {
+		severity = notifier.SeverityContact
+		// Critical files get elevated severity
+		if strings.Contains(path, "/etc/shadow") || strings.Contains(path, "/etc/sudoers") {
+			severity = notifier.SeverityMovement
+		}
+	}
+
+	// Build equipment description with process info
+	equip := "file"
+	if event.Exe != "" {
+		equip = fmt.Sprintf("file (exe: %s)", event.Exe)
+	}
+
+	alert := notifier.Alert{
+		Severity:  severity,
+		SkillID:   f.id,
+		SkillName: f.name,
+		Title:     "Critical File Access",
+		Size:      "1 file",
+		Activity:  activity,
+		Location:  filepath.Dir(path),
+		Unit:      fmt.Sprintf("uid=%s pid=%s", event.UID, event.PID),
+		Time:      event.Timestamp,
+		Equipment: equip,
+		Metadata: map[string]string{
+			"path":      path,
+			"operation": operation,
+			"uid":       event.UID,
+			"auid":      event.AUID,
+			"pid":       event.PID,
+			"ppid":      event.PPID,
+			"comm":      event.Comm,
+			"exe":       event.Exe,
+			"syscall":   event.Syscall,
+		},
+	}
+
+	log.Printf("[file-watch] Sending alert: %s - %s", alert.Title, alert.Activity)
+	alerts <- alert
 }
 
 // extractStringList safely extracts a list of strings from config

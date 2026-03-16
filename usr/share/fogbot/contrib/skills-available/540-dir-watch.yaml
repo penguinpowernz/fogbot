@@ -1,10 +1,9 @@
 id: 540
 name: dir-watch
 description: >
-  Alert on new files or directories added to watched folders.
-  Uses inotify to monitor configured paths for IN_CREATE and
-  IN_MOVED_TO events. Useful for locations that should be static
-  or change only during known maintenance windows.
+  Alert on new files or directories added to watched folders using auditd.
+  Monitors configured paths for file creation and modification events.
+  Provides user/process context that inotify cannot.
 why: >
   Attackers frequently stage tools, scripts, and payloads in
   sensitive directories before execution. A new file appearing
@@ -12,10 +11,11 @@ why: >
   maintenance window is a strong indicator of compromise or
   persistence activity. This skill catches the delivery phase.
 requires:
-  - inotify
-tags: [filesystem, persistence, delivery]
+  - auditd
+  - root
+tags: [filesystem, persistence, delivery, auditd]
 severity_default: red
-requires_approval: false
+requires_approval: true
 config:
   watch_paths:
     - /usr/local/bin/
