@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,58 @@ func (f *FileWatch) SetEnabled(enabled bool)        { f.enabled = enabled }
 func (f *FileWatch) Config() map[string]interface{} { return f.config }
 func (f *FileWatch) DropIns() []skills.DropIn       { return nil }
 
+// SetupHints checks which configured watch paths don't exist and returns
+// suggested touch commands the user can run to create canary files.
+// Paths owned by a specific user get a `sudo -iu <user> touch ...` form;
+// root-owned paths use `sudo touch ...`.
+func (f *FileWatch) SetupHints() []string {
+	watchPaths, err := extractPathPermsMap(f.config, "watch_paths")
+	if err != nil {
+		return nil
+	}
+
+	// Collect missing paths, grouped by owner prefix
+	var rootMissing []string
+	homeMissing := map[string][]string{} // username -> paths
+
+	for path := range watchPaths {
+		if _, err := os.Stat(path); err == nil {
+			continue // exists, skip
+		}
+
+		// Heuristic: paths under /home/<user> or /root suggest an owner
+		if strings.HasPrefix(path, "/root/") {
+			rootMissing = append(rootMissing, path)
+		} else if strings.HasPrefix(path, "/home/") {
+			parts := strings.SplitN(path, "/", 4) // ["", "home", "user", ...]
+			if len(parts) >= 3 {
+				user := parts[2]
+				homeMissing[user] = append(homeMissing[user], path)
+			} else {
+				rootMissing = append(rootMissing, path)
+			}
+		} else {
+			rootMissing = append(rootMissing, path)
+		}
+	}
+
+	if len(rootMissing) == 0 && len(homeMissing) == 0 {
+		return nil
+	}
+
+	var hints []string
+
+	if len(rootMissing) > 0 {
+		hints = append(hints, fmt.Sprintf("sudo touch %s", strings.Join(rootMissing, " ")))
+	}
+
+	for user, paths := range homeMissing {
+		hints = append(hints, fmt.Sprintf("sudo -iu %s touch %s", user, strings.Join(paths, " ")))
+	}
+
+	return hints
+}
+
 func (f *FileWatch) Configure(cfg map[string]interface{}) error {
 	f.config = cfg
 	return nil
@@ -64,12 +117,16 @@ func (f *FileWatch) generateRuleKey() string {
 	return fmt.Sprintf("fb-file-%d", f.id)
 }
 
-// DeduceCommands generates auditctl commands from the declarative config
+// DeduceCommands generates auditctl commands from the declarative config.
+// Each path in watch_paths maps to a permission string (any combo of r/w/a/x):
+//
+//	r = reads, w = writes, a = attribute changes, x = executions
+//
+// One auditctl command is generated per path:
+//
+//	auditctl -w <path> -p <perms> -k fb-file-<skillID>
 func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
-	commands := []skills.SystemCommand{}
-
-	// Extract watch paths from config
-	watchPaths, err := extractStringList(cfg, "watch_paths")
+	watchPaths, err := extractPathPermsMap(cfg, "watch_paths")
 	if err != nil {
 		return nil, fmt.Errorf("invalid watch_paths config: %w", err)
 	}
@@ -78,56 +135,17 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 		return nil, fmt.Errorf("no watch_paths configured")
 	}
 
-	// Extract permission flags
-	alertOnRead := getBool(cfg, "alert_on_read", false)
-	alertOnWrite := getBool(cfg, "alert_on_write", true)
-	alertOnExecute := getBool(cfg, "alert_on_execute", true)
-	alertOnAttribute := getBool(cfg, "alert_on_attribute", true)
-
-	// Build permission string (wa = write+attribute, r = read, x = execute)
-	perms := ""
-	if alertOnWrite {
-		perms += "w"
-	}
-	if alertOnAttribute {
-		perms += "a"
-	}
-	if alertOnRead {
-		perms += "r"
-	}
-	if alertOnExecute {
-		perms += "x"
-	}
-
-	if perms == "" {
-		return nil, fmt.Errorf("no permissions enabled for monitoring")
-	}
-
-	// Generate non-obvious rule key
 	ruleKey := f.generateRuleKey()
+	commands := []skills.SystemCommand{}
 
-	// Build auditctl commands for each path
-	for _, path := range watchPaths {
-		cmd := fmt.Sprintf("auditctl -w %s -p %s -k %s", path, perms, ruleKey)
-
-		// Create human-readable description of what's monitored
-		var permDesc []string
-		if alertOnRead {
-			permDesc = append(permDesc, "reads")
-		}
-		if alertOnWrite {
-			permDesc = append(permDesc, "writes")
-		}
-		if alertOnAttribute {
-			permDesc = append(permDesc, "attribute changes")
-		}
-		if alertOnExecute {
-			permDesc = append(permDesc, "executions")
+	for path, perms := range watchPaths {
+		if perms == "" {
+			return nil, fmt.Errorf("no permissions set for path %s", path)
 		}
 
 		commands = append(commands, skills.SystemCommand{
-			Command:     cmd,
-			Description: fmt.Sprintf("Monitor %s for %s", path, strings.Join(permDesc, ", ")),
+			Command:     fmt.Sprintf("auditctl -w %s -p %s -k %s", path, perms, ruleKey),
+			Description: fmt.Sprintf("Monitor %s for %s", path, expandPerms(perms)),
 			Metadata: map[string]string{
 				"rule_key": ruleKey,
 				"path":     path,
@@ -141,7 +159,6 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 
 // CheckSystemState verifies if auditd rules are already configured
 func (f *FileWatch) CheckSystemState() (bool, error) {
-	// Get current audit rules
 	cmd := exec.Command("auditctl", "-l")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -149,40 +166,15 @@ func (f *FileWatch) CheckSystemState() (bool, error) {
 	}
 
 	rulesOutput := string(output)
-
-	// Generate the rule key we expect to find
 	ruleKey := f.generateRuleKey()
 
-	// Extract watch paths from config
-	watchPaths, err := extractStringList(f.config, "watch_paths")
+	watchPaths, err := extractPathPermsMap(f.config, "watch_paths")
 	if err != nil {
 		return false, fmt.Errorf("invalid watch_paths config: %w", err)
 	}
 
-	// Build permission string to match what we generate in DeduceCommands
-	alertOnRead := getBool(f.config, "alert_on_read", false)
-	alertOnWrite := getBool(f.config, "alert_on_write", true)
-	alertOnExecute := getBool(f.config, "alert_on_execute", true)
-	alertOnAttribute := getBool(f.config, "alert_on_attribute", true)
-
-	perms := ""
-	if alertOnWrite {
-		perms += "w"
-	}
-	if alertOnAttribute {
-		perms += "a"
-	}
-	if alertOnRead {
-		perms += "r"
-	}
-	if alertOnExecute {
-		perms += "x"
-	}
-
-	// Check if all expected paths are monitored with our rule key
-	for _, path := range watchPaths {
-		// Look for exact match: -w /etc/passwd -p warx -k fb-file-500
-		// This avoids false positives from substring matches
+	for path, perms := range watchPaths {
+		// Look for exact match: -w /etc/passwd -p rwa -k fb-file-500
 		rulePattern := fmt.Sprintf("-w %s -p %s -k %s", path, perms, ruleKey)
 		if !strings.Contains(rulesOutput, rulePattern) {
 			return false, nil
@@ -351,39 +343,45 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 	alerts <- alert
 }
 
-// extractStringList safely extracts a list of strings from config
-func extractStringList(cfg map[string]interface{}, key string) ([]string, error) {
+// extractPathPermsMap extracts the watch_paths map from config.
+// YAML parses map[string]interface{} so values will be strings like "rwa".
+func extractPathPermsMap(cfg map[string]interface{}, key string) (map[string]string, error) {
 	val, ok := cfg[key]
 	if !ok {
-		return []string{}, nil
+		return map[string]string{}, nil
 	}
 
-	// Handle []interface{} from YAML parsing
-	if listInterface, ok := val.([]interface{}); ok {
-		result := make([]string, 0, len(listInterface))
-		for _, item := range listInterface {
-			if str, ok := item.(string); ok {
-				result = append(result, str)
-			} else {
-				return nil, fmt.Errorf("invalid string in %s: %v", key, item)
-			}
+	raw, ok := val.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("watch_paths must be a map of path: perms")
+	}
+
+	result := make(map[string]string, len(raw))
+	for path, permsVal := range raw {
+		perms, ok := permsVal.(string)
+		if !ok {
+			return nil, fmt.Errorf("perms for %s must be a string (e.g. \"rwa\"), got %T", path, permsVal)
 		}
-		return result, nil
+		result[path] = perms
 	}
 
-	return nil, fmt.Errorf("invalid format for %s", key)
+	return result, nil
 }
 
-// getBool safely extracts a boolean from config with a default value
-func getBool(cfg map[string]interface{}, key string, defaultValue bool) bool {
-	val, ok := cfg[key]
-	if !ok {
-		return defaultValue
+// expandPerms converts a compact permission string into a human-readable description.
+func expandPerms(perms string) string {
+	var parts []string
+	if strings.Contains(perms, "r") {
+		parts = append(parts, "reads")
 	}
-
-	if b, ok := val.(bool); ok {
-		return b
+	if strings.Contains(perms, "w") {
+		parts = append(parts, "writes")
 	}
-
-	return defaultValue
+	if strings.Contains(perms, "a") {
+		parts = append(parts, "attribute changes")
+	}
+	if strings.Contains(perms, "x") {
+		parts = append(parts, "executions")
+	}
+	return strings.Join(parts, ", ")
 }

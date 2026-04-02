@@ -5,23 +5,45 @@ description: >
   /etc/sudoers, SSH configs, PAM configs. Alerts on any access.
 why: >
   These files control system access and authentication. Any unexpected
-  modification is a critical security event. Even reads can indicate
-  reconnaissance.
+  modification is a critical security event. Even reads of some files
+  can indicate reconnaissance.
 requires:
   - auditd
   - root
 tags: [file-integrity, auth, auditd]
 severity_default: red
 requires_approval: true
+
+# Commands generated at enable time (one per path):
+#   auditctl -w <path> -p <perms> -k fb-file-500
+#
+# Permission flags per path are derived from the watch_paths map below:
+#   r = alert on reads
+#   w = alert on writes
+#   a = alert on attribute changes
+#   x = alert on executions
+#
+# Example: "/etc/passwd": "rwa" generates:
+#   auditctl -w /etc/passwd -p rwa -k fb-file-500
+
 config:
   watch_paths:
-    - /etc/passwd
-    - /etc/shadow
-    - /etc/sudoers
-    - /etc/sudoers.d
-    - /etc/ssh/sshd_config
-    - /etc/pam.d
-  alert_on_read: true
-  alert_on_write: true
-  alert_on_execute: true
-  alert_on_attribute: true
+    # Auth files - watch everything including reads (reads = recon)
+    /etc/passwd: rwa
+    /etc/shadow: rwa
+    /etc/sudoers: rwa
+    /etc/sudoers.d: rwa
+
+    # SSH/PAM configs - writes and attribute changes only (reads are common)
+    /etc/ssh/sshd_config: wa
+    /etc/pam.d: wa
+
+    # Canary files - watch everything, any access is suspicious
+    /root/.ssh/id_rsa: rwxa
+    /root/.ssh/authorized_keys: rwa
+    /root/.aws/credentials: rwa
+    /root/.kube/config: rwa
+    /root/.netrc: rwa
+    /root/.gnupg: rwa
+    /root/.bitcoin/wallet.dat: rwa
+    /root/.bash_history: rwa
