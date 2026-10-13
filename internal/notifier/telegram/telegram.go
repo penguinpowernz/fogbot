@@ -102,10 +102,6 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 		targetChatID = t.chatID
 	}
 
-	// Debug logging
-	fmt.Printf("[DEBUG] SendText: input chatID='%s', parsed=%d, struct chatID=%d, text='%s'\n",
-		chatID, targetChatID, t.chatID, text)
-
 	params := url.Values{}
 	params.Set("chat_id", strconv.FormatInt(targetChatID, 10))
 	params.Set("text", text)
