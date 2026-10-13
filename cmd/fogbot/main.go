@@ -23,6 +23,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
+	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
 	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
@@ -201,9 +202,9 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(logfreshness.New())
 	registry.Register(servicehealth.New())
 	registry.Register(auditdhealth.New())
+	registry.Register(filewatch.NewDefault())
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
-	// Note: filewatch skill requires config from YAML, registered in CLI command
 
 	// Log registered skills
 	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))

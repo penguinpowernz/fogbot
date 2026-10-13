@@ -43,6 +43,17 @@ func New(cfg skills.SkillConfig) *FileWatch {
 	}
 }
 
+// NewDefault creates a FileWatch with hardcoded defaults for daemon registration.
+// Configure() will be called later with the actual YAML config.
+func NewDefault() *FileWatch {
+	return &FileWatch{
+		id:      500,
+		name:    "file-watch",
+		config:  map[string]interface{}{},
+		enabled: false,
+	}
+}
+
 func (f *FileWatch) ID() int                        { return f.id }
 func (f *FileWatch) Name() string                   { return f.name }
 func (f *FileWatch) Description() string            { return f.description }
