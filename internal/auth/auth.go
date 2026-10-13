@@ -83,11 +83,15 @@ func (s *State) Load() error {
 	return json.Unmarshal(data, s)
 }
 
-// Save persists state to disk
+// Save persists state to disk. Callers must not hold mu.
 func (s *State) Save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.saveLocked()
+}
 
+// saveLocked writes state to disk. Caller must hold mu (read or write).
+func (s *State) saveLocked() error {
 	// Ensure directory exists
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -102,23 +106,31 @@ func (s *State) Save() error {
 	return os.WriteFile(s.path, data, 0600)
 }
 
-// IsAuthorized checks if a chat ID is authorized
+// IsAuthorized checks if a specific chat ID is authorized.
+// Pass an empty string only if you want to check whether nobody is authorized.
 func (s *State) IsAuthorized(chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.AuthorizedChat == chatID
+	return s.AuthorizedChat != "" && s.AuthorizedChat == chatID
+}
+
+// IsAnyoneAuthorized returns true if any chat has been authorized.
+// Use this for decisions that apply to the whole notifier (startup/shutdown messages).
+func (s *State) IsAnyoneAuthorized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AuthorizedChat != ""
 }
 
 // Authorize marks a chat as authorized
 func (s *State) Authorize(chatID string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.AuthorizedChat = chatID
 	s.AuthorizedAt = time.Now()
 	s.CodeUsed = true
 	s.Code = "" // burn the code
-	s.mu.Unlock()
-
-	return s.Save()
+	return s.saveLocked()
 }
 
 // GetCode returns the current auth code
@@ -171,13 +183,12 @@ func (s *State) ClearPendingAuth(chatID string) {
 // Deauthorize removes authorization from current chat
 func (s *State) Deauthorize() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.AuthorizedChat = ""
 	s.AuthorizedAt = time.Time{}
 	s.CodeUsed = false
 	s.Code = "" // Clear code - will be generated on next /start
-	s.mu.Unlock()
-
-	return s.Save()
+	return s.saveLocked()
 }
 
 // GenerateNewCode creates and stores a new auth code

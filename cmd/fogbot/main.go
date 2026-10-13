@@ -162,7 +162,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	// Check authorization status
-	if authState.IsAuthorized("") {
+	if authState.IsAnyoneAuthorized() {
 		log.Printf("Already authorized (chat_id in state.json)")
 	} else {
 		log.Printf("Not yet authorized - waiting for /start command from Telegram")
@@ -284,7 +284,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	// Send startup message
-	if notif != nil && authState.IsAuthorized("") {
+	if notif != nil && authState.IsAnyoneAuthorized() {
 		startupAlert := notifier.Alert{
 			Severity:  notifier.SeverityNominal,
 			Title:     "fogbot online",
@@ -331,7 +331,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 				log.Printf("Received %s, shutting down...", sig)
 
 				// Send shutdown message
-				if notif != nil && authState.IsAuthorized("") {
+				if notif != nil && authState.IsAnyoneAuthorized() {
 					shutdownAlert := notifier.Alert{
 						Severity:  notifier.SeverityMovement,
 						Title:     "fogbot offline",
