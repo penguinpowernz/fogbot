@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/kballard/go-shellquote"
 )
 
 // Enabler handles the process of enabling skills with user approval
@@ -170,7 +172,10 @@ func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
 func (e *Enabler) executeCommand(cmd SystemCommand) error {
 	fmt.Printf("  Executing: %s\n", cmd.Description)
 
-	parts := strings.Fields(cmd.Command)
+	parts, err := shellquote.Split(cmd.Command)
+	if err != nil {
+		return fmt.Errorf("failed to parse command %q: %w", cmd.Command, err)
+	}
 	if len(parts) == 0 {
 		return fmt.Errorf("empty command")
 	}
@@ -178,6 +183,11 @@ func (e *Enabler) executeCommand(cmd SystemCommand) error {
 	execCmd := exec.Command(parts[0], parts[1:]...)
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
+		// auditctl exits non-zero when the rule already exists; treat this as success
+		if strings.Contains(string(output), "Rule exists") {
+			fmt.Printf("  (rule already exists, skipping)\n")
+			return nil
+		}
 		return fmt.Errorf("command failed: %w\nOutput: %s", err, string(output))
 	}
 
