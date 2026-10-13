@@ -195,7 +195,9 @@ func (s *SuidSweep) sweep() map[string]baseline.SuidEntry {
 	for _, searchPath := range s.searchPaths {
 		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				return nil // skip errors
+				// Log permission/access errors so the operator knows the sweep is incomplete
+				log.Printf("[suid-sweep] Walk error at %s: %v", path, err)
+				return nil // continue walking other paths
 			}
 
 			if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
