@@ -159,7 +159,7 @@ func (p *PortTripwires) CheckSystemState() (bool, error) {
 
 // Watch monitors system logs for port tripwire alerts
 func (p *PortTripwires) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
-	alerts := make(chan notifier.Alert)
+	alerts := make(chan notifier.Alert, 10)
 
 	go func() {
 		defer close(alerts)
