@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -204,12 +205,17 @@ func (baseline *Baseline) Diff(current map[string]SuidEntry) []SuidEntry {
 	return new
 }
 
-// HashFile computes SHA256 hash of a file
+// HashFile computes SHA256 hash of a file without loading it all into memory.
 func HashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash), nil
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
