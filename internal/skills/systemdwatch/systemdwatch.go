@@ -96,21 +96,35 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 
 	alerts := make(chan notifier.Alert, 10)
 
-	// Subscribe to systemd manager signals
-	// We want to listen to org.freedesktop.systemd1.Manager on /org/freedesktop/systemd1
-	matchRules := []string{
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='Reloading'",
-		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitNew'",
-		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitRemoved'",
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitFilesChanged'",
+	// Subscribe to specific systemd manager signals via D-Bus match rules.
+	// Each entry maps a member name to the options used to add it.
+	type matchEntry struct {
+		member string
+		opts   []dbus.MatchOption
+	}
+	matchEntries := []matchEntry{
+		{
+			member: "Reloading",
+			opts: []dbus.MatchOption{
+				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
+				dbus.WithMatchMember("Reloading"),
+			},
+		},
+		{
+			member: "UnitFilesChanged",
+			opts: []dbus.MatchOption{
+				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
+				dbus.WithMatchMember("UnitFilesChanged"),
+			},
+		},
 	}
 
-	for _, rule := range matchRules {
-		if err := conn.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.systemd1.Manager")); err != nil {
+	for _, entry := range matchEntries {
+		if err := conn.AddMatchSignal(entry.opts...); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("adding match rule: %w", err)
+			return nil, fmt.Errorf("adding match rule for %s: %w", entry.member, err)
 		}
-		log.Printf("[systemd-watch] Added D-Bus match: %s", rule)
+		log.Printf("[systemd-watch] Added D-Bus match for member: %s", entry.member)
 	}
 
 	// Create signal channel
