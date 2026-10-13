@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/penguinpowernz/fogbot/internal/notifier"
@@ -136,25 +137,36 @@ func (s *SSHMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	// Open auth.log
-	file, err := os.Open(s.authLogPath)
+	openFile := func() (*os.File, *bufio.Reader, error) {
+		f, err := os.Open(s.authLogPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			f.Close()
+			return nil, nil, err
+		}
+		return f, bufio.NewReader(f), nil
+	}
+
+	file, reader, err := openFile()
 	if err != nil {
 		log.Printf("[ssh-monitor] Failed to open %s: %v", s.authLogPath, err)
 		return
 	}
 	defer file.Close()
 
-	// Seek to end to only watch new entries
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		log.Printf("[ssh-monitor] Failed to seek to end: %v", err)
-		return
-	}
-
-	reader := bufio.NewReader(file)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	log.Printf("[ssh-monitor] Watching %s", s.authLogPath)
+
+	var lastIno uint64
+	if fi, err := file.Stat(); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			lastIno = st.Ino
+		}
+	}
 
 	for {
 		select {
@@ -162,6 +174,20 @@ func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Al
 			return
 
 		case <-ticker.C:
+			// Detect log rotation: check if the inode on disk differs from the open file
+			if fi, err := os.Stat(s.authLogPath); err == nil {
+				if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Ino != lastIno {
+					log.Printf("[ssh-monitor] Log rotation detected, reopening %s", s.authLogPath)
+					file.Close()
+					file, reader, err = openFile()
+					if err != nil {
+						log.Printf("[ssh-monitor] Failed to reopen %s: %v", s.authLogPath, err)
+						return
+					}
+					lastIno = st.Ino
+				}
+			}
+
 			// Read new lines
 			for {
 				line, err := reader.ReadString('\n')

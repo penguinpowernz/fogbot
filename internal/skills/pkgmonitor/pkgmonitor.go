@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/penguinpowernz/fogbot/internal/notifier"
@@ -97,24 +98,36 @@ func (p *PkgMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (p *PkgMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	file, err := os.Open(p.logPath)
+	openFile := func() (*os.File, *bufio.Reader, error) {
+		f, err := os.Open(p.logPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			f.Close()
+			return nil, nil, err
+		}
+		return f, bufio.NewReader(f), nil
+	}
+
+	file, reader, err := openFile()
 	if err != nil {
 		log.Printf("[pkg-monitor] Failed to open %s: %v", p.logPath, err)
 		return
 	}
 	defer file.Close()
 
-	// Seek to end
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		log.Printf("[pkg-monitor] Failed to seek to end: %v", err)
-		return
-	}
-
-	reader := bufio.NewReader(file)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	log.Printf("[pkg-monitor] Watching %s", p.logPath)
+
+	var lastIno uint64
+	if fi, err := file.Stat(); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			lastIno = st.Ino
+		}
+	}
 
 	for {
 		select {
@@ -122,6 +135,20 @@ func (p *PkgMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Al
 			return
 
 		case <-ticker.C:
+			// Detect log rotation: check if the inode on disk differs from the open file
+			if fi, err := os.Stat(p.logPath); err == nil {
+				if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Ino != lastIno {
+					log.Printf("[pkg-monitor] Log rotation detected, reopening %s", p.logPath)
+					file.Close()
+					file, reader, err = openFile()
+					if err != nil {
+						log.Printf("[pkg-monitor] Failed to reopen %s: %v", p.logPath, err)
+						return
+					}
+					lastIno = st.Ino
+				}
+			}
+
 			for {
 				line, err := reader.ReadString('\n')
 				if err != nil {
