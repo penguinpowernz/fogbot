@@ -50,7 +50,8 @@ func (s *SuidSweep) Why() string {
 }
 func (s *SuidSweep) Requires() []string { return []string{"root"} }
 func (s *SuidSweep) Tags() []string     { return []string{"permissions", "suid", "persistence"} }
-func (s *SuidSweep) DropIns() []skills.DropIn { return nil }
+func (s *SuidSweep) DropIns() []skills.DropIn    { return nil }
+func (s *SuidSweep) SetupHints() []string        { return nil }
 func (s *SuidSweep) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

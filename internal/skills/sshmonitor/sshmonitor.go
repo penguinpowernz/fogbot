@@ -72,7 +72,8 @@ func (s *SSHMonitor) Why() string {
 }
 func (s *SSHMonitor) Requires() []string { return []string{"auth.log read access"} }
 func (s *SSHMonitor) Tags() []string     { return []string{"auth", "ssh", "brute-force"} }
-func (s *SSHMonitor) DropIns() []skills.DropIn { return nil }
+func (s *SSHMonitor) DropIns() []skills.DropIn    { return nil }
+func (s *SSHMonitor) SetupHints() []string        { return nil }
 func (s *SSHMonitor) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

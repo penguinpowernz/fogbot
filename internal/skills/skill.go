@@ -76,6 +76,10 @@ type Skill interface {
 	// Returns true if system is already configured, false if commands need to run
 	CheckSystemState() (bool, error)
 
+	// SetupHints returns optional shell commands the user may want to run manually
+	// after enabling the skill (e.g. creating canary files). May return nil.
+	SetupHints() []string
+
 	// Watch starts the detection loop, returning alerts on the channel
 	Watch(ctx context.Context) (<-chan notifier.Alert, error)
 

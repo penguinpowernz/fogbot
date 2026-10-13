@@ -70,7 +70,7 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 		return nil
 	}
 
-	// Step 3: Filter out already-approved commands
+	// Step 3: Filter out already-approved commands from the approval prompt
 	needsApproval := []SystemCommand{}
 	for _, cmd := range commands {
 		if requiresApproval && !e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
@@ -85,7 +85,20 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 		}
 	}
 
-	// Step 5: Execute all commands
+	// Step 5: Print setup hints if the skill has any (e.g. create canary files)
+	if hints := skill.SetupHints(); len(hints) > 0 {
+		fmt.Printf("\n%s%s┌─────────────────────────────────────────────────────────────────┐%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%s%s│ ℹ  Optional: create missing canary/bait files%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%s%s└─────────────────────────────────────────────────────────────────┘%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%sRun these commands if you want to create files that don't exist yet:%s\n\n", colorGray, colorReset)
+		for _, hint := range hints {
+			fmt.Printf("  %s%s%s\n", colorGreen, hint, colorReset)
+		}
+		fmt.Println()
+	}
+
+	// Step 6: Execute all commands. CheckSystemState already confirmed the system
+	// is not configured, so every command needs to run regardless of prior approval.
 	fmt.Printf("\nApplying configuration for skill '%s'...\n", skill.Name())
 	for _, cmd := range commands {
 		if err := e.executeCommand(cmd); err != nil {

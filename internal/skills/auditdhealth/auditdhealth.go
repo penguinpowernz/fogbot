@@ -49,7 +49,8 @@ func (a *AuditdHealth) Why() string {
 }
 func (a *AuditdHealth) Requires() []string { return []string{"auditd"} }
 func (a *AuditdHealth) Tags() []string     { return []string{"deadman", "auditd", "health"} }
-func (a *AuditdHealth) DropIns() []skills.DropIn { return nil }
+func (a *AuditdHealth) DropIns() []skills.DropIn    { return nil }
+func (a *AuditdHealth) SetupHints() []string        { return nil }
 func (a *AuditdHealth) Enabled() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

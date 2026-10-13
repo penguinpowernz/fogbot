@@ -48,7 +48,8 @@ func (l *LogFreshness) Why() string {
 }
 func (l *LogFreshness) Requires() []string { return []string{"inotify"} }
 func (l *LogFreshness) Tags() []string     { return []string{"deadman", "logging", "health"} }
-func (l *LogFreshness) DropIns() []skills.DropIn { return nil }
+func (l *LogFreshness) DropIns() []skills.DropIn    { return nil }
+func (l *LogFreshness) SetupHints() []string        { return nil }
 func (l *LogFreshness) Enabled() bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

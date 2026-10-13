@@ -49,6 +49,7 @@ func (p *PortTripwires) Enabled() bool                     { return p.enabled }
 func (p *PortTripwires) SetEnabled(enabled bool)           { p.enabled = enabled }
 func (p *PortTripwires) Config() map[string]interface{}    { return p.config }
 func (p *PortTripwires) DropIns() []skills.DropIn          { return nil }
+func (p *PortTripwires) SetupHints() []string              { return nil }
 
 func (p *PortTripwires) Configure(cfg map[string]interface{}) error {
 	p.config = cfg

@@ -52,7 +52,8 @@ func (s *SystemdWatch) Requires() []string { return []string{"dbus", "systemd"} 
 func (s *SystemdWatch) Tags() []string {
 	return []string{"persistence", "systemd", "configuration"}
 }
-func (s *SystemdWatch) DropIns() []skills.DropIn { return nil }
+func (s *SystemdWatch) DropIns() []skills.DropIn    { return nil }
+func (s *SystemdWatch) SetupHints() []string        { return nil }
 func (s *SystemdWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
 	return []skills.SystemCommand{}, nil
 }

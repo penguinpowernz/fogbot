@@ -53,7 +53,8 @@ func (p *PkgMonitor) Why() string {
 }
 func (p *PkgMonitor) Requires() []string { return []string{"dpkg.log"} }
 func (p *PkgMonitor) Tags() []string     { return []string{"packages", "dpkg", "system-changes"} }
-func (p *PkgMonitor) DropIns() []skills.DropIn { return nil }
+func (p *PkgMonitor) DropIns() []skills.DropIn    { return nil }
+func (p *PkgMonitor) SetupHints() []string        { return nil }
 func (p *PkgMonitor) Enabled() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

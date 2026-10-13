@@ -88,6 +88,7 @@ func (d *DirWatch) Why() string {
 func (d *DirWatch) Requires() []string        { return []string{"auditd", "root"} }
 func (d *DirWatch) Tags() []string            { return []string{"filesystem", "persistence", "delivery", "auditd"} }
 func (d *DirWatch) DropIns() []skills.DropIn  { return nil }
+func (d *DirWatch) SetupHints() []string      { return nil }
 
 func (d *DirWatch) Enabled() bool {
 	d.mu.RLock()

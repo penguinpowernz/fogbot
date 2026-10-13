@@ -46,7 +46,8 @@ func (s *ServiceHealth) Why() string {
 }
 func (s *ServiceHealth) Requires() []string { return []string{"systemd"} }
 func (s *ServiceHealth) Tags() []string     { return []string{"deadman", "systemd", "health"} }
-func (s *ServiceHealth) DropIns() []skills.DropIn { return nil }
+func (s *ServiceHealth) DropIns() []skills.DropIn    { return nil }
+func (s *ServiceHealth) SetupHints() []string        { return nil }
 func (s *ServiceHealth) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
