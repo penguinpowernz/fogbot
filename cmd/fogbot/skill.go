@@ -9,6 +9,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/penguinpowernz/fogbot/internal/approval"
+	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
@@ -56,8 +57,8 @@ func (a *approvalTrackerAdapter) RevokeSkill(skillID int) error {
 
 func initSkillSystem(stateDir string) error {
 	var err error
-	// Use stateDir from global flags if provided, otherwise use build-time default
-	trackerPath := "/var/lib/fogbot"
+	// Use stateDir from global flags/env if provided, otherwise fall back to config default
+	trackerPath := config.DefaultStateDir
 	if stateDir != "" {
 		trackerPath = stateDir
 	}

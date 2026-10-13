@@ -212,23 +212,14 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		log.Printf("  - #%d: %s", skill.ID(), skill.Name())
 	}
 
-	// Build skills directories (CLI flags override env vars)
-	skillsAvailToUse := skillsAvailable
-	if skillsAvailToUse == "" {
-		skillsAvailToUse = os.Getenv("FOGBOT_SKILLS_AVAILABLE")
-	}
-
-	skillsEnabToUse := skillsEnabled
-	if skillsEnabToUse == "" {
-		skillsEnabToUse = os.Getenv("FOGBOT_SKILLS_ENABLED")
-	}
-
-	// Override skills package paths so all functions use the correct directories
-	skills.OverrideSkillsPaths(skillsAvailToUse, skillsEnabToUse)
+	// Override skills package paths so all functions use the correct directories.
+	// initFlagsFromEnv() already populated skillsAvailable/skillsEnabled from env vars;
+	// OverrideSkillsPaths ignores empty strings, preserving package-level env defaults.
+	skills.OverrideSkillsPaths(skillsAvailable, skillsEnabled)
 
 	// Load enabled skills from filesystem
-	log.Printf("Loading enabled skills from: %s", skillsEnabToUse)
-	enabledSkillConfigs, err := skills.LoadEnabledConfigs(skillsEnabToUse)
+	log.Printf("Loading enabled skills from: %s", skills.SkillsEnabledPath)
+	enabledSkillConfigs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
 	if err != nil {
 		log.Fatalf("Failed to load enabled skills: %v", err)
 	}

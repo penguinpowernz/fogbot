@@ -25,10 +25,15 @@ func getEnvOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-// OverrideSkillsPaths allows setting custom skills directory paths (for CLI flag support)
+// OverrideSkillsPaths allows setting custom skills directory paths (for CLI flag support).
+// Empty strings are ignored so that env-var defaults set at package init are preserved.
 func OverrideSkillsPaths(availablePath, enabledPath string) {
-	SkillsAvailablePath = availablePath
-	SkillsEnabledPath = enabledPath
+	if availablePath != "" {
+		SkillsAvailablePath = availablePath
+	}
+	if enabledPath != "" {
+		SkillsEnabledPath = enabledPath
+	}
 }
 
 // LoadAvailable reads all skill YAML files from skills-available directory
