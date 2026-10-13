@@ -17,6 +17,7 @@ type Engine struct {
 	alerts     map[string]*alertState
 	ticker     *time.Ticker
 	stopClean  chan struct{}
+	closeOnce  sync.Once
 	suppressed int64 // counter for suppressed alerts
 }
 
@@ -146,8 +147,10 @@ func (e *Engine) ResetSuppressedCount() int64 {
 	return count
 }
 
-// Close shuts down the deduplication engine
+// Close shuts down the deduplication engine. Safe to call multiple times.
 func (e *Engine) Close() {
-	close(e.stopClean)
-	e.ticker.Stop()
+	e.closeOnce.Do(func() {
+		close(e.stopClean)
+		e.ticker.Stop()
+	})
 }
