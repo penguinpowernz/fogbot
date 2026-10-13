@@ -6,18 +6,14 @@ LDFLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 
 build:
 	@echo "Building fogbot $(VERSION)..."
-	go build -ldflags "$(LDFLAGS)" -o fogbot ./cmd/fogbot
+	go build -ldflags "$(LDFLAGS)" -o usr/local/bin/fogbot ./cmd/fogbot
 	@echo "Build complete: fogbot"
 
-install: build
-	@echo "Installing to package structure..."
-	mkdir -p usr/local/bin
-	cp fogbot usr/local/bin/
-	chmod +x usr/local/bin/fogbot
-	@echo "Installation complete"
-
+pkg: build
+	ian pkg -x
+	
 clean:
-	@echo "Cleaning build artifacts..."
+	@echo "Cleaning build artifacts.."
 	rm -f fogbot
 	rm -f usr/local/bin/fogbot
 	@echo "Clean complete"
@@ -54,16 +50,10 @@ test-cli: build
 	export FOGBOT_STATE_DIR=/tmp/fogbot-test; \
 	./fogbot skill list
 
-# Package (requires ian tool)
-package: build install
-	@echo "Creating Debian package..."
-	ian build
-	@echo "Package created"
 
 help:
 	@echo "Fogbot Makefile targets:"
 	@echo "  build         - Build the fogbot binary"
-	@echo "  install       - Install binary to package structure"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  test          - Run Go tests"
 	@echo "  test-cli      - Test CLI with environment variables"
@@ -72,5 +62,5 @@ help:
 	@echo "  docker-down   - Stop Docker Compose"
 	@echo "  docker-logs   - Show Docker logs"
 	@echo "  docker-shell  - Open shell in Docker container"
-	@echo "  package       - Build Debian package with ian"
+	@echo "  pkg           - Build Debian package with ian"
 	@echo "  help          - Show this help message"
