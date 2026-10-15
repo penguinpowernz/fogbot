@@ -27,7 +27,7 @@ const (
 // Telegram implements the Notifier interface for Telegram
 type Telegram struct {
 	token      string
-	chatID     int64
+	chatID     int64 // configured fallback, used only while no chat is authorized
 	httpClient *http.Client
 	authState  *auth.State
 	rateLimiter *auth.RateLimiter
@@ -71,10 +71,14 @@ func (t *Telegram) Name() string {
 
 // Send sends an alert to Telegram
 func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
+	chatID, err := t.alertChatID()
+	if err != nil {
+		return err
+	}
 	message := t.formatAlert(alert)
 
 	params := url.Values{}
-	params.Set("chat_id", strconv.FormatInt(t.chatID, 10))
+	params.Set("chat_id", strconv.FormatInt(chatID, 10))
 	params.Set("text", message)
 	params.Set("parse_mode", "Markdown")
 
@@ -84,8 +88,27 @@ func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
 		params.Set("reply_markup", keyboard)
 	}
 
-	_, err := t.apiCall("sendMessage", params)
+	_, err = t.apiCall("sendMessage", params)
 	return err
+}
+
+// alertChatID returns the chat alerts go to: the chat authorized via /start
+// (persisted in state.json, so it survives restarts and /reset clears it),
+// falling back to the configured chat_id while nobody is authorized.
+func (t *Telegram) alertChatID() (int64, error) {
+	if t.authState != nil {
+		if id := t.authState.AuthorizedChatID(); id != "" {
+			chatID, err := strconv.ParseInt(id, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid authorized chat ID %q: %w", id, err)
+			}
+			return chatID, nil
+		}
+	}
+	if t.chatID != 0 {
+		return t.chatID, nil
+	}
+	return 0, fmt.Errorf("no authorized chat: send /start to the bot to authorize one")
 }
 
 // SendText sends a plain text message to a specific chat (for command responses)
@@ -98,8 +121,8 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 		if err != nil {
 			return fmt.Errorf("invalid chat ID '%s': %w", chatID, err)
 		}
-	} else {
-		targetChatID = t.chatID
+	} else if targetChatID, err = t.alertChatID(); err != nil {
+		return err
 	}
 
 	params := url.Values{}
@@ -110,16 +133,6 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 	if err != nil {
 		return fmt.Errorf("sendMessage to %d failed: %w", targetChatID, err)
 	}
-	return nil
-}
-
-// UpdateChatID updates the default chat ID for this notifier (called after authorization)
-func (t *Telegram) UpdateChatID(chatID string) error {
-	newChatID, err := strconv.ParseInt(chatID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid chat ID: %w", err)
-	}
-	t.chatID = newChatID
 	return nil
 }
 

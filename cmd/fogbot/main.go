@@ -462,13 +462,6 @@ func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState 
 	// Clear pending status
 	authState.ClearPendingAuth(chatID)
 
-	// Update the Telegram notifier's chatID so future alerts work
-	if tg, ok := notif.(*telegram.Telegram); ok {
-		if err := tg.UpdateChatID(chatID); err != nil {
-			log.Printf("Failed to update Telegram chatID: %v", err)
-		}
-	}
-
 	log.Printf("Chat %s authorized successfully", chatID)
 
 	// Send success message

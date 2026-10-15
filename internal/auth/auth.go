@@ -122,6 +122,13 @@ func (s *State) IsAnyoneAuthorized() bool {
 	return s.AuthorizedChat != ""
 }
 
+// AuthorizedChatID returns the authorized chat ID, or "" if nobody is authorized
+func (s *State) AuthorizedChatID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AuthorizedChat
+}
+
 // Authorize marks a chat as authorized
 func (s *State) Authorize(chatID string) error {
 	s.mu.Lock()
