@@ -25,6 +25,16 @@ type PortTripwires struct {
 }
 
 // New creates a new PortTripwires skill from config
+// NewDefault creates a PortTripwires for daemon registration.
+// Configure() will be called later with the actual YAML config.
+func NewDefault() *PortTripwires {
+	return &PortTripwires{
+		id:     510,
+		name:   "port-tripwires",
+		config: map[string]interface{}{},
+	}
+}
+
 func New(cfg skills.SkillConfig) *PortTripwires {
 	return &PortTripwires{
 		id:              cfg.ID,

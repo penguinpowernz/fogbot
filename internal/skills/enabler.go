@@ -3,6 +3,7 @@ package skills
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -210,26 +211,38 @@ func (e *Enabler) ReapplyOnStartup(skill Skill) error {
 		return nil // Already configured, nothing to do
 	}
 
-	// Get approved commands for this skill
-	approvedCmds := e.approvalTracker.GetApprovedCommands(skill.ID())
-	if len(approvedCmds) == 0 {
-		return fmt.Errorf("skill enabled but no approved commands found")
+	// Re-derive the commands from the skill's config so they run in the order the
+	// skill generates them (the tracker stores them unordered), and only run the
+	// ones the user approved. A command whose config changed since approval is
+	// skipped rather than run unapproved.
+	commands, err := skill.DeduceCommands(skill.Config())
+	if err != nil {
+		return fmt.Errorf("failed to deduce commands: %w", err)
 	}
 
-	fmt.Printf("⚠ Skill '%s' configuration missing from system, reapplying...\n", skill.Name())
-
-	// Re-execute approved commands
-	for _, approved := range approvedCmds {
-		cmd := SystemCommand{
-			Command:     approved.Command,
-			Description: approved.Description,
-			Metadata:    approved.Metadata,
+	var approved []SystemCommand
+	for _, cmd := range commands {
+		if e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
+			approved = append(approved, cmd)
+		} else {
+			log.Printf("[startup-repair] Skipping unapproved command for '%s': %s", skill.Name(), cmd.Command)
 		}
+	}
+	if len(approved) == 0 {
+		return fmt.Errorf("configuration missing and no approved commands to restore it; re-enable the skill with 'fogbot skill enable %d'", skill.ID())
+	}
+
+	log.Printf("[startup-repair] Skill '%s' configuration missing from system, reapplying %d approved commands", skill.Name(), len(approved))
+	for _, cmd := range approved {
 		if err := e.executeCommand(cmd); err != nil {
 			return fmt.Errorf("failed to reapply command: %w", err)
 		}
 	}
 
-	fmt.Printf("✓ Configuration reapplied for skill '%s'\n", skill.Name())
+	if len(approved) < len(commands) {
+		return fmt.Errorf("reapplied %d of %d commands; re-enable the skill to approve the rest", len(approved), len(commands))
+	}
+
+	log.Printf("[startup-repair] Configuration reapplied for skill '%s'", skill.Name())
 	return nil
 }

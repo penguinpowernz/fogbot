@@ -29,6 +29,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
 	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
+	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
@@ -206,6 +207,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(servicehealth.New())
 	registry.Register(auditdhealth.New())
 	registry.Register(filewatch.NewDefault())
+	registry.Register(porttripwires.NewDefault())
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
 
@@ -246,8 +248,17 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		log.Printf("✓ Enabled skill #%d: %s", skillCfg.ID, skillCfg.Name)
 	}
 
-	// Start all enabled skills
 	alertChannels := make([]<-chan notifier.Alert, 0)
+
+	// Startup repair: restore system config (auditctl rules, iptables rules) that
+	// didn't survive a reboot, using only previously approved commands
+	if err := initSkillSystem(cfg.StateDir); err != nil {
+		log.Printf("Startup repair unavailable: %v", err)
+	} else {
+		alertChannels = append(alertChannels, repairSkills(registry.Enabled(), machineHostname))
+	}
+
+	// Start all enabled skills
 	for _, skill := range registry.Enabled() {
 		alertChan, err := skill.Watch(ctx)
 		if err != nil {
@@ -350,6 +361,33 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			return
 		}
 	}
+}
+
+// repairSkills reapplies missing system configuration for enabled skills and
+// returns a channel carrying an alert for each skill that couldn't be repaired,
+// since such a skill is enabled but blind.
+func repairSkills(enabled []skills.Skill, hostname string) <-chan notifier.Alert {
+	failures := make(chan notifier.Alert, len(enabled))
+	defer close(failures)
+
+	for _, skill := range enabled {
+		if err := skillEnabler.ReapplyOnStartup(skill); err != nil {
+			log.Printf("Startup repair failed for skill #%d %s: %v", skill.ID(), skill.Name(), err)
+			failures <- notifier.Alert{
+				Severity:  notifier.SeverityMovement,
+				SkillID:   skill.ID(),
+				SkillName: skill.Name(),
+				Title:     "Startup Repair Failed",
+				Activity:  fmt.Sprintf("System config for %s could not be restored; the skill may not detect anything", skill.Name()),
+				Location:  hostname,
+				Unit:      err.Error(),
+				Time:      time.Now(),
+				Equipment: "startup-repair",
+				Host:      hostname,
+			}
+		}
+	}
+	return failures
 }
 
 func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
