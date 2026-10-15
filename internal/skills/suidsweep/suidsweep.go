@@ -96,52 +96,17 @@ func (s *SuidSweep) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (s *SuidSweep) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	// Perform initial sweep
-	log.Printf("[suid-sweep] Performing initial SUID/SGID sweep...")
-	current := s.sweep()
-
-	// Load existing baseline
-	existingBaseline, err := s.baselineManager.LoadSuid()
-	if err != nil {
-		log.Printf("[suid-sweep] Failed to load baseline: %v", err)
-	}
-
-	if existingBaseline == nil || !existingBaseline.Approved {
-		// No approved baseline - create pending and request approval
-		log.Printf("[suid-sweep] No approved baseline found, creating pending baseline")
-
-		pending := &baseline.Baseline{
-			Type:      "suid",
-			Entries:   current,
-			CreatedAt: time.Now(),
-			Approved:  false,
-		}
-
-		if err := s.baselineManager.SavePendingSuid(pending); err != nil {
-			log.Printf("[suid-sweep] Failed to save pending baseline: %v", err)
-		} else {
-			// Send alert requesting approval
-			alertChan <- notifier.Alert{
-				Severity:  notifier.SeverityNominal,
-				SkillID:   SkillID,
-				SkillName: SkillName,
-				Title:     "SUID Baseline Pending Approval",
-				Size:      fmt.Sprintf("%d binaries", len(current)),
-				Activity:  "Initial SUID/SGID sweep complete",
-				Location:  "system-wide",
-				Unit:      "awaiting operator approval",
-				Time:      time.Now(),
-				Equipment: "baseline-approval",
-			}
-		}
-	}
-
-	ticker := time.NewTicker(s.sweepInterval)
-	defer ticker.Stop()
-
 	// Changes already reported (path -> hash), so each one alerts once rather
 	// than on every sweep until the operator approves the new state
 	reported := make(map[string]string)
+
+	// Sweep straight away so anything planted while fogbot was down is reported
+	// at startup rather than an interval later
+	log.Printf("[suid-sweep] Performing initial SUID/SGID sweep...")
+	s.check(alertChan, reported, true)
+
+	ticker := time.NewTicker(s.sweepInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -150,65 +115,93 @@ func (s *SuidSweep) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 
 		case <-ticker.C:
 			log.Printf("[suid-sweep] Running periodic SUID/SGID sweep")
-			current := s.sweep()
-
-			// Load current approved baseline
-			bl, err := s.baselineManager.LoadSuid()
-			if err != nil {
-				log.Printf("[suid-sweep] Failed to load baseline: %v", err)
-				continue
-			}
-
-			if bl == nil || !bl.Approved {
-				// Still waiting for approval
-				log.Printf("[suid-sweep] Baseline not yet approved, skipping diff")
-				continue
-			}
-
-			newBinaries := bl.Diff(current)
-			changedBinaries := bl.Changed(current)
-			if len(newBinaries) == 0 && len(changedBinaries) == 0 {
-				continue
-			}
-			log.Printf("[suid-sweep] Found %d new and %d changed SUID/SGID binaries", len(newBinaries), len(changedBinaries))
-
-			// Offer the current state for approval so the operator can accept
-			// legitimate changes (e.g. a package upgrade) with /approve
-			if err := s.baselineManager.SavePendingSuid(&baseline.Baseline{
-				Type:      "suid",
-				Entries:   current,
-				CreatedAt: time.Now(),
-			}); err != nil {
-				log.Printf("[suid-sweep] Failed to save pending baseline: %v", err)
-			}
-
-			report := func(binary baseline.SuidEntry, title, verb string) {
-				if h, ok := reported[binary.Path]; ok && h == binary.Hash {
-					return
-				}
-				reported[binary.Path] = binary.Hash
-				alertChan <- notifier.Alert{
-					Severity:    notifier.SeverityContact,
-					SkillID:     SkillID,
-					SkillName:   SkillName,
-					Title:       title,
-					Size:        "1 binary",
-					Activity:    fmt.Sprintf("SUID/SGID binary %s: %s (send /approve if expected)", verb, filepath.Base(binary.Path)),
-					Location:    binary.Path,
-					Unit:        fmt.Sprintf("uid=%d gid=%d mode=%o", binary.UID, binary.GID, binary.Mode),
-					Time:        time.Now(),
-					Equipment:   "filesystem-sweep",
-					Acknowledge: true,
-				}
-			}
-			for _, binary := range newBinaries {
-				report(binary, "New SUID/SGID Binary Detected", "appeared")
-			}
-			for _, binary := range changedBinaries {
-				report(binary, "SUID/SGID Binary Modified", "modified")
-			}
+			s.check(alertChan, reported, false)
 		}
 	}
+}
+
+// check sweeps the filesystem and compares it against the approved baseline.
+// Any difference is saved as the pending baseline for the operator to review and
+// approve on the host with `fogbot baseline approve`.
+func (s *SuidSweep) check(alertChan chan<- notifier.Alert, reported map[string]string, initial bool) {
+	current := s.sweep()
+
+	bl, err := s.baselineManager.LoadSuid()
+	if err != nil {
+		log.Printf("[suid-sweep] Failed to load baseline: %v", err)
+		return
+	}
+
+	if bl == nil || !bl.Approved {
+		if err := s.savePending(current); err != nil {
+			return
+		}
+		if initial {
+			log.Printf("[suid-sweep] No approved baseline, pending baseline saved")
+			alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "SUID Baseline Pending Approval",
+				Size:      fmt.Sprintf("%d binaries", len(current)),
+				Activity:  "Initial SUID/SGID sweep complete",
+				Location:  "system-wide",
+				Unit:      "awaiting approval: sudo fogbot baseline approve",
+				Time:      time.Now(),
+				Equipment: "baseline-approval",
+			}
+		}
+		return
+	}
+
+	newBinaries := bl.Diff(current)
+	changedBinaries := bl.Changed(current)
+	if len(newBinaries) == 0 && len(changedBinaries) == 0 {
+		return
+	}
+	log.Printf("[suid-sweep] Found %d new and %d changed SUID/SGID binaries", len(newBinaries), len(changedBinaries))
+
+	if err := s.savePending(current); err != nil {
+		return
+	}
+
+	report := func(binary baseline.SuidEntry, title, verb string) {
+		if h, ok := reported[binary.Path]; ok && h == binary.Hash {
+			return
+		}
+		reported[binary.Path] = binary.Hash
+		alertChan <- notifier.Alert{
+			Severity:    notifier.SeverityContact,
+			SkillID:     SkillID,
+			SkillName:   SkillName,
+			Title:       title,
+			Size:        "1 binary",
+			Activity:    fmt.Sprintf("SUID/SGID binary %s: %s", verb, filepath.Base(binary.Path)),
+			Location:    binary.Path,
+			Unit:        fmt.Sprintf("uid=%d gid=%d mode=%s", binary.UID, binary.GID, os.FileMode(binary.Mode)),
+			Time:        time.Now(),
+			Equipment:   "if expected: sudo fogbot baseline approve",
+			Acknowledge: true,
+		}
+	}
+	for _, binary := range newBinaries {
+		report(binary, "New SUID/SGID Binary Detected", "appeared")
+	}
+	for _, binary := range changedBinaries {
+		report(binary, "SUID/SGID Binary Modified", "modified")
+	}
+}
+
+func (s *SuidSweep) savePending(current map[string]baseline.SuidEntry) error {
+	err := s.baselineManager.SavePendingSuid(&baseline.Baseline{
+		Type:      "suid",
+		Entries:   current,
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		log.Printf("[suid-sweep] Failed to save pending baseline: %v", err)
+	}
+	return err
 }
 
 // sweep performs a filesystem walk looking for SUID/SGID binaries

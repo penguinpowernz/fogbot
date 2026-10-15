@@ -127,7 +127,7 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 }
 
 // ApproveSuid approves a pending baseline and promotes it to active
-func (m *Manager) ApproveSuid(chatID string) error {
+func (m *Manager) ApproveSuid(approvedBy string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -149,7 +149,7 @@ func (m *Manager) ApproveSuid(chatID string) error {
 	now := time.Now()
 	baseline.Approved = true
 	baseline.ApprovedAt = &now
-	baseline.ApprovedBy = chatID
+	baseline.ApprovedBy = approvedBy
 
 	// Save as active baseline (don't marshal the mutex)
 	data, err = json.MarshalIndent(&struct {

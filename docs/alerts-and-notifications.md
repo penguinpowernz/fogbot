@@ -99,7 +99,7 @@ Trust On First Use authentication proves operator has shell access.
 - `/status` - System status summary
 - `/reset` - Deauthorize this chat
 - `hi` / `hello` - Ping test
-- `/approve` - Approve pending baselines (future)
+- `/approve` - Replies with how to approve baselines on the host (`sudo fogbot baseline approve`); approval is deliberately not possible over Telegram
 
 ### Security Features
 

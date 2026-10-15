@@ -107,6 +107,7 @@ func main() {
 
 	// Add CLI subcommands (to be implemented) - now have access to global flags
 	rootCmd.AddCommand(newSkillCmd())
+	rootCmd.AddCommand(newBaselineCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -297,7 +298,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			log.Fatalf("Failed to start command handler: %v", err)
 		}
 
-		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname, baselineManager)
+		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname)
 	}
 
 	// Setup signal handling
@@ -349,7 +350,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string, baselineManager *baseline.Manager) {
+func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -386,7 +387,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 
 			case notifier.CmdApprove:
 				if authState.IsAuthorized(cmd.ChatID) {
-					handleApprove(ctx, cmd, baselineManager, notif)
+					handleApprove(ctx, cmd, notif)
 				}
 
 			default:
@@ -486,7 +487,7 @@ func handleHelp(ctx context.Context, cmd notifier.Command, authState *auth.State
 			"• /status - View system status\n" +
 			"• /reset - Deauthorize this chat\n" +
 			"• hi / hello - Test connection\n" +
-			"• /approve - Approve pending baselines\n\n" +
+			"\nBaselines are approved on the host: sudo fogbot baseline approve\n\n" +
 			"*About:*\n" +
 			"fogbot monitors your Linux system for intrusions and reports alerts via Telegram.\n\n" +
 			"More info: github.com/penguinpowernz/fogbot"
@@ -546,23 +547,13 @@ func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname str
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
-func handleApprove(ctx context.Context, cmd notifier.Command, baselineManager *baseline.Manager, notif notifier.Notifier) {
-	log.Printf("Approve command from authorized chat")
-
-	pending, err := baselineManager.LoadPendingSuid()
-	if err != nil || pending == nil {
-		sendSimpleMessage(ctx, notif, cmd.ChatID, "Nothing to approve: no pending SUID baseline")
-		return
-	}
-
-	if err := baselineManager.ApproveSuid(cmd.ChatID); err != nil {
-		log.Printf("Failed to approve SUID baseline: %v", err)
-		sendSimpleMessage(ctx, notif, cmd.ChatID, "❌ Failed to approve SUID baseline, check the fogbot logs")
-		return
-	}
-
-	log.Printf("SUID baseline approved by chat %s (%d entries)", cmd.ChatID, len(pending.Entries))
-	sendSimpleMessage(ctx, notif, cmd.ChatID, fmt.Sprintf("✅ SUID baseline approved (%d binaries)", len(pending.Entries)))
+func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Notifier) {
+	// Approving over Telegram would let whoever holds the authorized chat
+	// whitelist a planted SUID binary, so it must be done on the host as root.
+	sendSimpleMessage(ctx, notif, cmd.ChatID, "Baselines can't be approved over Telegram.\n\n"+
+		"On the host, review and approve with:\n"+
+		"  sudo fogbot baseline diff\n"+
+		"  sudo fogbot baseline approve")
 }
 
 // mergeAndSendAlerts merges all skill alert channels and sends them via the notifier

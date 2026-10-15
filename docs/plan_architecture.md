@@ -127,7 +127,7 @@ type Command struct {
 // Known command verbs
 const (
     CmdStart   = "start"    // initiate auth
-    CmdApprove = "approve"  // approve pending SUID baseline
+    CmdApprove = "approve"  // replies with how to approve on the host (not approvable via Telegram)
     CmdStatus  = "status"   // request status summary
 )
 ```
@@ -231,4 +231,4 @@ Watched paths:
 - 🟢 **NOMINAL** — startup, shutdown, baseline approval prompts
 
 ### Baseline Workflow
-On first run with `permissions` sensor enabled, fogbot performs a SUID/SGID sweep, writes findings to `/var/lib/fogbot/suid_baseline.pending.json`, sends a Telegram message listing every SUID binary found, and **waits for operator approval** (`/approve` command via Telegram) before the baseline is trusted. Until approved, any new SUID binary triggers a RED alert regardless.
+On first run with `permissions` sensor enabled, fogbot performs a SUID/SGID sweep, writes findings to `/var/lib/fogbot/suid_baseline.pending.json`, sends a Telegram message listing every SUID binary found, and **waits for operator approval** before the baseline is trusted. Approval is done on the host as root (`sudo fogbot baseline diff` to review, `sudo fogbot baseline approve` to accept), never over Telegram, so whoever holds the authorized chat can't whitelist a planted binary. Later changes (new or modified SUID binaries) are alerted once and saved as the pending baseline for the same review. Until approved, any new SUID binary triggers a RED alert regardless.

@@ -44,7 +44,7 @@ sensors:
     suid_sweep_interval: 1h
     baseline_file: /var/lib/fogbot/suid_baseline.json
     # First run: sweeps, writes pending baseline, sends Telegram list,
-    # waits for /approve command before trusting. Until approved,
+    # waits for `sudo fogbot baseline approve` on the host before trusting. Until approved,
     # every new SUID binary is a RED alert.
 
   port_tripwires:

@@ -296,7 +296,7 @@ Reports: full path of new entry, whether it is a file or directory, permissions,
 - Excludes own IP(s) from scanning to avoid self-detection
 - Alerts on new IPs appearing on the network
 - Configurable network ranges (CIDR notation)
-- First run establishes baseline, operator approves via Telegram
+- First run establishes baseline, operator approves on the host with `sudo fogbot baseline approve`
 - **Intel button** on alerts triggers active reconnaissance (nmap, arp-scan, DNS)
 
 Reports: IP, MAC address, first-seen timestamp, reverse DNS if available.
