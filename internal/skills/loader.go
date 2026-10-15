@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -129,7 +130,10 @@ func LoadEnabled(basePath string) (map[int]bool, error) {
 	return enabled, nil
 }
 
-// IsEnabled checks if a skill is enabled by checking for symlink in skills-enabled
+// IsEnabled checks if a skill is enabled by checking for symlink in skills-enabled.
+// Only <name>.yaml and <id>-<name>.yaml match: a substring match would let
+// "watch" pick whichever *watch* skill sorts first, so disabling it would remove
+// the wrong symlink without revoking that skill's approvals.
 func IsEnabled(skillName string, basePath string) bool {
 	if basePath == "" {
 		basePath = SkillsEnabledPath
@@ -153,15 +157,7 @@ func IsEnabled(skillName string, basePath string) bool {
 			continue
 		}
 		name := entry.Name()
-		// Check if it ends with -skillName.yaml
-		if strings.HasSuffix(name, "-"+skillName+".yaml") {
-			info, err := os.Lstat(filepath.Join(basePath, name))
-			if err == nil && info.Mode()&os.ModeSymlink != 0 {
-				return true
-			}
-		}
-		// Check if it contains the skill name
-		if strings.Contains(name, skillName) && filepath.Ext(name) == ".yaml" {
+		if isSkillFile(name, skillName) {
 			info, err := os.Lstat(filepath.Join(basePath, name))
 			if err == nil && info.Mode()&os.ModeSymlink != 0 {
 				return true
@@ -170,6 +166,18 @@ func IsEnabled(skillName string, basePath string) bool {
 	}
 
 	return false
+}
+
+// isSkillFile reports whether a file name is <id>-<skillName>.yaml. The numeric
+// prefix is required: a plain suffix match would let "watch" match
+// 500-file-watch.yaml.
+func isSkillFile(fileName, skillName string) bool {
+	prefix, ok := strings.CutSuffix(fileName, "-"+skillName+".yaml")
+	if !ok || prefix == "" {
+		return false
+	}
+	_, err := strconv.Atoi(prefix)
+	return err == nil
 }
 
 // Enable creates a symlink in skills-enabled pointing to skills-available
@@ -197,19 +205,14 @@ func Enable(skillName string, availablePath, enabledPath string) error {
 		if entry.IsDir() {
 			continue
 		}
-		// Match files ending with skillName.yaml or containing skillName
+		// Match skillName.yaml or <id>-skillName.yaml
 		name := entry.Name()
 		if name == skillName+".yaml" {
 			sourcePath = filepath.Join(availablePath, name)
 			break
 		}
-		// Check if it ends with -skillName.yaml (e.g., 410-service-health.yaml)
-		if filepath.Ext(name) == ".yaml" && strings.HasSuffix(name, "-"+skillName+".yaml") {
-			sourcePath = filepath.Join(availablePath, name)
-			break
-		}
-		// Check if it contains the skill name (e.g., 410-service-health.yaml matches "service-health")
-		if filepath.Ext(name) == ".yaml" && strings.Contains(name, skillName) {
+		// Or <id>-skillName.yaml (e.g., 410-service-health.yaml)
+		if isSkillFile(name, skillName) {
 			sourcePath = filepath.Join(availablePath, name)
 			break
 		}
@@ -318,13 +321,8 @@ func Disable(skillName string, enabledPath string) error {
 			linkPath = filepath.Join(enabledPath, name)
 			break
 		}
-		// Check if it ends with -skillName.yaml
-		if filepath.Ext(name) == ".yaml" && strings.HasSuffix(name, "-"+skillName+".yaml") {
-			linkPath = filepath.Join(enabledPath, name)
-			break
-		}
-		// Check if it contains the skill name
-		if filepath.Ext(name) == ".yaml" && strings.Contains(name, skillName) {
+		// Or <id>-skillName.yaml
+		if isSkillFile(name, skillName) {
 			linkPath = filepath.Join(enabledPath, name)
 			break
 		}
