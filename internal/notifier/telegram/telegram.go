@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,7 +28,7 @@ const (
 // Telegram implements the Notifier interface for Telegram
 type Telegram struct {
 	token      string
-	chatID     int64
+	chatID     int64 // configured fallback, used only while no chat is authorized
 	httpClient *http.Client
 	authState  *auth.State
 	rateLimiter *auth.RateLimiter
@@ -60,7 +61,7 @@ func NewTelegram(token string, chatID int64, authState *auth.State) *Telegram {
 		chatID:      chatID,
 		httpClient:  httpClient,
 		authState:   authState,
-		rateLimiter: auth.NewRateLimiter(10, 3, 60*time.Second),
+		rateLimiter: auth.NewRateLimiter(10, 5, 60*time.Second),
 	}
 }
 
@@ -71,10 +72,14 @@ func (t *Telegram) Name() string {
 
 // Send sends an alert to Telegram
 func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
+	chatID, err := t.alertChatID()
+	if err != nil {
+		return err
+	}
 	message := t.formatAlert(alert)
 
 	params := url.Values{}
-	params.Set("chat_id", strconv.FormatInt(t.chatID, 10))
+	params.Set("chat_id", strconv.FormatInt(chatID, 10))
 	params.Set("text", message)
 	params.Set("parse_mode", "Markdown")
 
@@ -84,8 +89,27 @@ func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
 		params.Set("reply_markup", keyboard)
 	}
 
-	_, err := t.apiCall("sendMessage", params)
+	_, err = t.apiCall("sendMessage", params)
 	return err
+}
+
+// alertChatID returns the chat alerts go to: the chat authorized via /start
+// (persisted in state.json, so it survives restarts and /reset clears it),
+// falling back to the configured chat_id while nobody is authorized.
+func (t *Telegram) alertChatID() (int64, error) {
+	if t.authState != nil {
+		if id := t.authState.AuthorizedChatID(); id != "" {
+			chatID, err := strconv.ParseInt(id, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid authorized chat ID %q: %w", id, err)
+			}
+			return chatID, nil
+		}
+	}
+	if t.chatID != 0 {
+		return t.chatID, nil
+	}
+	return 0, fmt.Errorf("no authorized chat: send /start to the bot to authorize one")
 }
 
 // SendText sends a plain text message to a specific chat (for command responses)
@@ -98,13 +122,9 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 		if err != nil {
 			return fmt.Errorf("invalid chat ID '%s': %w", chatID, err)
 		}
-	} else {
-		targetChatID = t.chatID
+	} else if targetChatID, err = t.alertChatID(); err != nil {
+		return err
 	}
-
-	// Debug logging
-	fmt.Printf("[DEBUG] SendText: input chatID='%s', parsed=%d, struct chatID=%d, text='%s'\n",
-		chatID, targetChatID, t.chatID, text)
 
 	params := url.Values{}
 	params.Set("chat_id", strconv.FormatInt(targetChatID, 10))
@@ -114,16 +134,6 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 	if err != nil {
 		return fmt.Errorf("sendMessage to %d failed: %w", targetChatID, err)
 	}
-	return nil
-}
-
-// UpdateChatID updates the default chat ID for this notifier (called after authorization)
-func (t *Telegram) UpdateChatID(chatID string) error {
-	newChatID, err := strconv.ParseInt(chatID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid chat ID: %w", err)
-	}
-	t.chatID = newChatID
 	return nil
 }
 
@@ -202,13 +212,15 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	var chatID int64
 	var callbackID string
 
-	if update.Message != nil {
+	// Chat and the callback's Message are optional in the Bot API (e.g. a
+	// callback from an inline-mode message has no Message), so guard against nil
+	if update.Message != nil && update.Message.Chat != nil {
 		text = update.Message.Text
 		chatID = update.Message.Chat.ID
-	} else if update.CallbackQuery != nil {
-		text = update.CallbackQuery.Data
-		chatID = update.CallbackQuery.Message.Chat.ID
-		callbackID = update.CallbackQuery.ID
+	} else if cq := update.CallbackQuery; cq != nil && cq.Message != nil && cq.Message.Chat != nil {
+		text = cq.Data
+		chatID = cq.Message.Chat.ID
+		callbackID = cq.ID
 	} else {
 		return nil
 	}
@@ -250,6 +262,15 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 }
 
 // formatAlert formats an alert as a Telegram message
+// markdownEscaper escapes the characters that start an entity in Telegram's
+// legacy Markdown mode. Alert fields contain paths, usernames and command lines
+// from the system, and an unbalanced _ or * makes Telegram reject the message.
+var markdownEscaper = strings.NewReplacer(`_`, `\_`, `*`, `\*`, "`", "\\`", `[`, `\[`)
+
+func escapeMarkdown(s string) string {
+	return markdownEscaper.Replace(s)
+}
+
 func (t *Telegram) formatAlert(alert notifier.Alert) string {
 	var emoji string
 	var severityText string
@@ -267,31 +288,31 @@ func (t *Telegram) formatAlert(alert notifier.Alert) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s *[%s]* %s\n", emoji, severityText, alert.Title))
+	sb.WriteString(fmt.Sprintf("%s *[%s]* %s\n", emoji, severityText, escapeMarkdown(alert.Title)))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
 
 	if alert.Size != "" {
-		sb.WriteString(fmt.Sprintf("*S:* %s\n", alert.Size))
+		sb.WriteString(fmt.Sprintf("*S:* %s\n", escapeMarkdown(alert.Size)))
 	}
 	if alert.Activity != "" {
-		sb.WriteString(fmt.Sprintf("*A:* %s\n", alert.Activity))
+		sb.WriteString(fmt.Sprintf("*A:* %s\n", escapeMarkdown(alert.Activity)))
 	}
 	if alert.Location != "" {
-		sb.WriteString(fmt.Sprintf("*L:* %s\n", alert.Location))
+		sb.WriteString(fmt.Sprintf("*L:* %s\n", escapeMarkdown(alert.Location)))
 	}
 	if alert.Unit != "" {
-		sb.WriteString(fmt.Sprintf("*U:* %s\n", alert.Unit))
+		sb.WriteString(fmt.Sprintf("*U:* %s\n", escapeMarkdown(alert.Unit)))
 	}
 	sb.WriteString(fmt.Sprintf("*T:* %s\n", alert.Time.UTC().Format("2006-01-02 15:04:05 UTC")))
 	if alert.Equipment != "" {
-		sb.WriteString(fmt.Sprintf("*E:* %s\n", alert.Equipment))
+		sb.WriteString(fmt.Sprintf("*E:* %s\n", escapeMarkdown(alert.Equipment)))
 	}
 
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("Host: %s", alert.Host))
+	sb.WriteString(fmt.Sprintf("Host: %s", escapeMarkdown(alert.Host)))
 
 	if alert.SkillID > 0 {
-		sb.WriteString(fmt.Sprintf("  |  skill #%d %s", alert.SkillID, alert.SkillName))
+		sb.WriteString(fmt.Sprintf("  |  skill #%d %s", alert.SkillID, escapeMarkdown(alert.SkillName)))
 	}
 
 	return sb.String()
@@ -323,8 +344,13 @@ func (t *Telegram) apiCall(method string, params url.Values) ([]byte, error) {
 
 	resp, err := t.httpClient.PostForm(apiURL, params)
 	if err != nil {
-		// Provide more detailed error for common issues
-		return nil, fmt.Errorf("api call failed (check network/TLS certs): %w", err)
+		// A *url.Error's message includes the request URL, which embeds the bot
+		// token, so report only the underlying error
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("%s call failed (check network/TLS certs): %w", method, err)
 	}
 	defer resp.Body.Close()
 

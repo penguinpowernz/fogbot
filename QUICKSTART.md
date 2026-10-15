@@ -8,9 +8,6 @@
 # Clone and build
 cd fogbot
 make build
-
-# Install to package structure
-make install
 ```
 
 ### Using Docker Compose (Recommended for Testing)
@@ -59,7 +56,7 @@ make docker-up
 make docker-logs
 
 # Or directly (requires root for some capabilities)
-sudo ./fogbot daemon
+sudo ./usr/local/bin/fogbot daemon
 ```
 
 ### Authorize Your Telegram Chat
@@ -94,7 +91,7 @@ export FOGBOT_SKILLS_AVAILABLE=$PWD/etc/fogbot/skills-available
 export FOGBOT_SKILLS_ENABLED=$PWD/etc/fogbot/skills-enabled
 
 # List all skills
-./fogbot skill list
+./usr/local/bin/fogbot skill list
 ```
 
 Output:
@@ -109,7 +106,7 @@ Output:
 ### Enable a Skill
 
 ```bash
-./fogbot skill enable ssh-monitor
+./usr/local/bin/fogbot skill enable ssh-monitor
 
 # Reload the daemon to activate
 sudo systemctl reload fogbot
@@ -120,7 +117,7 @@ docker-compose restart
 ### Get Skill Details
 
 ```bash
-./fogbot skill info ssh-monitor
+./usr/local/bin/fogbot skill info ssh-monitor
 ```
 
 ## Environment Variables
@@ -140,7 +137,7 @@ export FOGBOT_DRY_RUN=true  # Prevent actual system modifications
 Test without modifying your system:
 
 ```bash
-FOGBOT_DRY_RUN=true ./fogbot daemon
+FOGBOT_DRY_RUN=true ./usr/local/bin/fogbot daemon
 ```
 
 In dry-run mode:

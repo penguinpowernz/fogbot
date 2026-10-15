@@ -6,9 +6,6 @@
 # Build fogbot binary
 make build
 
-# Install to package structure (usr/local/bin/)
-make install
-
 # Clean build artifacts
 make clean
 ```
@@ -59,7 +56,7 @@ docker-compose exec -T fogbot fogbot skill info 510
 
 ```bash
 # Build Debian package with ian
-make package
+make pkg
 ```
 
 ## Environment Variables for Testing

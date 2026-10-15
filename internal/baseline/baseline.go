@@ -4,10 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
 // SuidEntry represents a single SUID/SGID file
@@ -118,6 +122,7 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 		return fmt.Errorf("failed to marshal baseline: %w", err)
 	}
 
+	selfwatch.ExpectWrite(path)
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write pending baseline: %w", err)
 	}
@@ -126,7 +131,19 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 }
 
 // ApproveSuid approves a pending baseline and promotes it to active
-func (m *Manager) ApproveSuid(chatID string) error {
+func (m *Manager) ApproveSuid(approvedBy string) error {
+	return m.approveSuid(approvedBy, nil)
+}
+
+// ApproveReviewedSuid approves the pending baseline only if it is still the one
+// the operator reviewed. The daemon rewrites the pending file on every sweep, so
+// without this check a SUID binary planted while the approval prompt is open
+// would be approved unseen.
+func (m *Manager) ApproveReviewedSuid(reviewed *Baseline, approvedBy string) error {
+	return m.approveSuid(approvedBy, reviewed)
+}
+
+func (m *Manager) approveSuid(approvedBy string, reviewed *Baseline) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -144,11 +161,15 @@ func (m *Manager) ApproveSuid(chatID string) error {
 		return fmt.Errorf("failed to parse pending baseline: %w", err)
 	}
 
+	if reviewed != nil && !sameEntries(reviewed.Entries, baseline.Entries) {
+		return fmt.Errorf("pending baseline changed since it was reviewed; review it again")
+	}
+
 	// Mark as approved
 	now := time.Now()
 	baseline.Approved = true
 	baseline.ApprovedAt = &now
-	baseline.ApprovedBy = chatID
+	baseline.ApprovedBy = approvedBy
 
 	// Save as active baseline (don't marshal the mutex)
 	data, err = json.MarshalIndent(&struct {
@@ -180,6 +201,20 @@ func (m *Manager) ApproveSuid(chatID string) error {
 	return nil
 }
 
+// sameEntries reports whether two baselines record the same files
+func sameEntries(a, b map[string]SuidEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, ea := range a {
+		eb, ok := b[path]
+		if !ok || ea.Hash != eb.Hash || ea.Mode != eb.Mode || ea.UID != eb.UID || ea.GID != eb.GID {
+			return false
+		}
+	}
+	return true
+}
+
 // Diff compares current state against baseline and returns new entries
 func (baseline *Baseline) Diff(current map[string]SuidEntry) []SuidEntry {
 	if baseline == nil {
@@ -204,12 +239,54 @@ func (baseline *Baseline) Diff(current map[string]SuidEntry) []SuidEntry {
 	return new
 }
 
-// HashFile computes SHA256 hash of a file
+// Changed returns entries that are in the baseline but whose content, mode or
+// ownership differs, e.g. a SUID binary replaced in place.
+func (baseline *Baseline) Changed(current map[string]SuidEntry) []SuidEntry {
+	if baseline == nil {
+		return nil
+	}
+
+	baseline.mu.RLock()
+	defer baseline.mu.RUnlock()
+
+	changed := make([]SuidEntry, 0)
+	for path, entry := range current {
+		old, exists := baseline.Entries[path]
+		if !exists {
+			continue
+		}
+		hashDiffers := old.Hash != "" && entry.Hash != "" && old.Hash != entry.Hash
+		if hashDiffers || old.Mode != entry.Mode || old.UID != entry.UID || old.GID != entry.GID {
+			changed = append(changed, entry)
+		}
+	}
+
+	return changed
+}
+
+// HashFile computes SHA256 hash of a regular file without loading it all into
+// memory. Anything else is refused: the SUID sweep walks user-writable trees,
+// and opening a FIFO there (which a user can chmod u+s) would block forever and
+// silently stop every later sweep. O_NONBLOCK keeps the open itself from
+// blocking if the path is swapped for a FIFO after it was stat'ed.
 func HashFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
-	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash), nil
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

@@ -3,14 +3,20 @@ package skills
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/kballard/go-shellquote"
 )
 
 // Enabler handles the process of enabling skills with user approval
 type Enabler struct {
 	approvalTracker ApprovalTracker
+
+	// dryRun prints commands instead of running them
+	dryRun bool
 }
 
 // CommandInfo interface for commands that can be approved
@@ -49,7 +55,11 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 	// Step 1: Check if system is already configured
 	isConfigured, err := skill.CheckSystemState()
 	if err != nil {
-		return fmt.Errorf("failed to check system state: %w", err)
+		if !e.dryRun {
+			return fmt.Errorf("failed to check system state: %w", err)
+		}
+		// Dry-run usually runs unprivileged, where the check can't work
+		fmt.Printf("  [dry-run] Could not check system state (%v), assuming not configured\n", err)
 	}
 
 	if isConfigured {
@@ -70,7 +80,7 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 		return nil
 	}
 
-	// Step 3: Filter out already-approved commands
+	// Step 3: Filter out already-approved commands from the approval prompt
 	needsApproval := []SystemCommand{}
 	for _, cmd := range commands {
 		if requiresApproval && !e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
@@ -85,7 +95,20 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 		}
 	}
 
-	// Step 5: Execute all commands
+	// Step 5: Print setup hints if the skill has any (e.g. create canary files)
+	if hints := skill.SetupHints(); len(hints) > 0 {
+		fmt.Printf("\n%s%s┌─────────────────────────────────────────────────────────────────┐%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%s%s│ ℹ  Optional: create missing canary/bait files%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%s%s└─────────────────────────────────────────────────────────────────┘%s\n", colorBold, colorCyan, colorReset)
+		fmt.Printf("%sRun these commands if you want to create files that don't exist yet:%s\n\n", colorGray, colorReset)
+		for _, hint := range hints {
+			fmt.Printf("  %s%s%s\n", colorGreen, hint, colorReset)
+		}
+		fmt.Println()
+	}
+
+	// Step 6: Execute all commands. CheckSystemState already confirmed the system
+	// is not configured, so every command needs to run regardless of prior approval.
 	fmt.Printf("\nApplying configuration for skill '%s'...\n", skill.Name())
 	for _, cmd := range commands {
 		if err := e.executeCommand(cmd); err != nil {
@@ -153,11 +176,23 @@ func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
 	return nil
 }
 
+// SetDryRun makes the enabler print commands instead of running them
+func (e *Enabler) SetDryRun(enabled bool) {
+	e.dryRun = enabled
+}
+
 // executeCommand runs a system command
 func (e *Enabler) executeCommand(cmd SystemCommand) error {
+	if e.dryRun {
+		fmt.Printf("  [dry-run] Would execute: %s\n", cmd.Command)
+		return nil
+	}
 	fmt.Printf("  Executing: %s\n", cmd.Description)
 
-	parts := strings.Fields(cmd.Command)
+	parts, err := shellquote.Split(cmd.Command)
+	if err != nil {
+		return fmt.Errorf("failed to parse command %q: %w", cmd.Command, err)
+	}
 	if len(parts) == 0 {
 		return fmt.Errorf("empty command")
 	}
@@ -165,6 +200,11 @@ func (e *Enabler) executeCommand(cmd SystemCommand) error {
 	execCmd := exec.Command(parts[0], parts[1:]...)
 	output, err := execCmd.CombinedOutput()
 	if err != nil {
+		// auditctl exits non-zero when the rule already exists; treat this as success
+		if strings.Contains(string(output), "Rule exists") {
+			fmt.Printf("  (rule already exists, skipping)\n")
+			return nil
+		}
 		return fmt.Errorf("command failed: %w\nOutput: %s", err, string(output))
 	}
 
@@ -187,26 +227,38 @@ func (e *Enabler) ReapplyOnStartup(skill Skill) error {
 		return nil // Already configured, nothing to do
 	}
 
-	// Get approved commands for this skill
-	approvedCmds := e.approvalTracker.GetApprovedCommands(skill.ID())
-	if len(approvedCmds) == 0 {
-		return fmt.Errorf("skill enabled but no approved commands found")
+	// Re-derive the commands from the skill's config so they run in the order the
+	// skill generates them (the tracker stores them unordered), and only run the
+	// ones the user approved. A command whose config changed since approval is
+	// skipped rather than run unapproved.
+	commands, err := skill.DeduceCommands(skill.Config())
+	if err != nil {
+		return fmt.Errorf("failed to deduce commands: %w", err)
 	}
 
-	fmt.Printf("⚠ Skill '%s' configuration missing from system, reapplying...\n", skill.Name())
-
-	// Re-execute approved commands
-	for _, approved := range approvedCmds {
-		cmd := SystemCommand{
-			Command:     approved.Command,
-			Description: approved.Description,
-			Metadata:    approved.Metadata,
+	var approved []SystemCommand
+	for _, cmd := range commands {
+		if e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
+			approved = append(approved, cmd)
+		} else {
+			log.Printf("[startup-repair] Skipping unapproved command for '%s': %s", skill.Name(), cmd.Command)
 		}
+	}
+	if len(approved) == 0 {
+		return fmt.Errorf("configuration missing and no approved commands to restore it; re-enable the skill with 'fogbot skill enable %d'", skill.ID())
+	}
+
+	log.Printf("[startup-repair] Skill '%s' configuration missing from system, reapplying %d approved commands", skill.Name(), len(approved))
+	for _, cmd := range approved {
 		if err := e.executeCommand(cmd); err != nil {
 			return fmt.Errorf("failed to reapply command: %w", err)
 		}
 	}
 
-	fmt.Printf("✓ Configuration reapplied for skill '%s'\n", skill.Name())
+	if len(approved) < len(commands) {
+		return fmt.Errorf("reapplied %d of %d commands; re-enable the skill to approve the rest", len(approved), len(commands))
+	}
+
+	log.Printf("[startup-repair] Configuration reapplied for skill '%s'", skill.Name())
 	return nil
 }

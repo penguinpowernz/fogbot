@@ -1,17 +1,16 @@
 package sshmonitor
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/hpcloud/tail"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
@@ -35,17 +34,34 @@ type SSHMonitor struct {
 	authLogPath          string
 }
 
+// ipPattern matches IPv4 and IPv6 addresses (sshd logs IPv6 unbracketed, e.g. 2001:db8::1)
+const ipPattern = `[0-9A-Fa-f:.]+`
+
+// syslogHeader matches the timestamp and hostname that start every auth.log
+// line, in both traditional ("Apr  6 10:00:01 host") and RFC 3339 formats.
+//
+// Every pattern is anchored to it and to the program tag. An unauthenticated
+// client controls the username sshd logs, so an unanchored pattern would let a
+// login attempt as user "Accepted password for root from 1.2.3.4 port 22" fake
+// a root login alert, or mark an IP as known so a later real login from it
+// raises no new-IP alert.
+const syslogHeader = `^(?:[A-Z][a-z]{2} +\d{1,2} \d\d:\d\d:\d\d|\d{4}-\d\d-\d\dT\S+) \S+ `
+
+// sshdTag matches sshd's program tag (sshd-session on OpenSSH 9.8+)
+const sshdTag = `sshd(?:-session)?\[\d+\]: `
+
 var (
 	// SSH login patterns
-	acceptedPattern     = regexp.MustCompile(`Accepted (password|publickey) for (\S+) from ([\d.]+) port (\d+)`)
-	failedPattern       = regexp.MustCompile(`Failed (password|publickey) for (\S+|invalid user \S+) from ([\d.]+)`)
-	invalidUserPattern  = regexp.MustCompile(`Invalid user (\S+) from ([\d.]+)`)
-	rootLoginPattern    = regexp.MustCompile(`Accepted .* for root from ([\d.]+)`)
+	acceptedPattern = regexp.MustCompile(syslogHeader + sshdTag + `Accepted (\S+) for (\S+) from (` + ipPattern + `) port (\d+)`)
+	// The attempted username may contain spaces and even " from <ip> port <n>",
+	// so take the address from the end of the line: the greedy user group leaves
+	// only sshd's own trailing " from <ip> port <n> ssh2[: key info]"
+	failedPattern = regexp.MustCompile(syslogHeader + sshdTag + `Failed (\S+) for (invalid user )?(.*) from (` + ipPattern + `) port \d+(?: ssh2)?(?::.*)?$`)
 
 	// sudo/su patterns
-	sudoPattern         = regexp.MustCompile(`sudo:\s+(\S+) : TTY=(\S+) ; PWD=(\S+) ; USER=(\S+) ; COMMAND=(.+)`)
-	sudoFailedPattern   = regexp.MustCompile(`sudo:\s+(\S+) : (\d+) incorrect password attempt`)
-	suPattern           = regexp.MustCompile(`su\[(\d+)\]: pam_unix\(su:auth\): authentication failure.*logname=(\S+) uid=(\d+) .* ruser=(\S+) rhost=(\S*)  user=(\S+)`)
+	sudoPattern       = regexp.MustCompile(syslogHeader + `sudo(?:\[\d+\])?:\s+(\S+) : TTY=(\S+) ; PWD=(\S+) ; USER=(\S+) ; COMMAND=(.+)`)
+	sudoFailedPattern = regexp.MustCompile(syslogHeader + `sudo(?:\[\d+\])?:\s+(\S+) : (\d+) incorrect password attempt`)
+	suPattern         = regexp.MustCompile(syslogHeader + `su\[(\d+)\]: pam_unix\(su:auth\): authentication failure.*logname=(\S+) uid=(\d+) .* ruser=(\S+) rhost=(\S*)  user=(\S+)`)
 )
 
 // New creates a new SSHMonitor skill
@@ -72,7 +88,8 @@ func (s *SSHMonitor) Why() string {
 }
 func (s *SSHMonitor) Requires() []string { return []string{"auth.log read access"} }
 func (s *SSHMonitor) Tags() []string     { return []string{"auth", "ssh", "brute-force"} }
-func (s *SSHMonitor) DropIns() []skills.DropIn { return nil }
+func (s *SSHMonitor) DropIns() []skills.DropIn    { return nil }
+func (s *SSHMonitor) SetupHints() []string        { return nil }
 func (s *SSHMonitor) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -135,21 +152,21 @@ func (s *SSHMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	// Open auth.log
-	file, err := os.Open(s.authLogPath)
+	// Follow from the end of the file. ReOpen handles rotation and truncation by
+	// reading the replacement file from the start, and waits if the file is missing.
+	cfg := tail.Config{Follow: true, ReOpen: true, Logger: tail.DiscardingLogger}
+	if _, err := os.Stat(s.authLogPath); err == nil {
+		// Only skip existing content; a file created later is read from the start
+		cfg.Location = &tail.SeekInfo{Offset: 0, Whence: io.SeekEnd}
+	}
+	t, err := tail.TailFile(s.authLogPath, cfg)
 	if err != nil {
-		log.Printf("[ssh-monitor] Failed to open %s: %v", s.authLogPath, err)
+		log.Printf("[ssh-monitor] Failed to tail %s: %v", s.authLogPath, err)
 		return
 	}
-	defer file.Close()
+	defer t.Cleanup()
+	defer t.Stop()
 
-	// Seek to end to only watch new entries
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		log.Printf("[ssh-monitor] Failed to seek to end: %v", err)
-		return
-	}
-
-	reader := bufio.NewReader(file)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -160,22 +177,18 @@ func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Al
 		case <-ctx.Done():
 			return
 
-		case <-ticker.C:
-			// Read new lines
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						break // no more data right now
-					}
-					log.Printf("[ssh-monitor] Read error: %v", err)
-					return
-				}
-
-				// Process the line
-				s.processLine(line, alertChan)
+		case line, ok := <-t.Lines:
+			if !ok {
+				log.Printf("[ssh-monitor] Tail of %s stopped: %v", s.authLogPath, t.Err())
+				return
 			}
+			if line.Err != nil {
+				log.Printf("[ssh-monitor] Read error: %v", line.Err)
+				continue
+			}
+			s.processLine(line.Text, alertChan)
 
+		case <-ticker.C:
 			// Clean up old failure timestamps
 			s.cleanupFailures()
 		}
@@ -193,7 +206,7 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 		port := matches[4]
 
 		// Check if this is a root login
-		if rootLoginPattern.MatchString(line) {
+		if user == "root" {
 			alertChan <- notifier.Alert{
 				Severity:  notifier.SeverityContact,
 				SkillID:   SkillID,
@@ -237,7 +250,7 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 
 	// Check for failed logins
 	if matches := failedPattern.FindStringSubmatch(line); matches != nil {
-		ip := matches[3]
+		ip := matches[4]
 
 		s.mu.Lock()
 		s.failuresByIP[ip] = append(s.failuresByIP[ip], now)
@@ -255,12 +268,9 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 
 		// Alert if threshold exceeded
 		if count >= s.bruteForceThreshold {
-			// Extract target user if possible
-			user := "unknown"
-			if matches[2] != "" && !strings.HasPrefix(matches[2], "invalid") {
-				user = matches[2]
-			} else if m := invalidUserPattern.FindStringSubmatch(line); m != nil {
-				user = m[1]
+			user := matches[3]
+			if matches[2] != "" {
+				user += " (invalid)"
 			}
 
 			alertChan <- notifier.Alert{

@@ -50,7 +50,8 @@ func (p *ProcExec) Why() string {
 }
 func (p *ProcExec) Requires() []string { return []string{"/proc"} }
 func (p *ProcExec) Tags() []string     { return []string{"process", "execution", "malware"} }
-func (p *ProcExec) DropIns() []skills.DropIn { return nil }
+func (p *ProcExec) DropIns() []skills.DropIn    { return nil }
+func (p *ProcExec) SetupHints() []string        { return nil }
 func (p *ProcExec) Enabled() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

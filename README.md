@@ -22,10 +22,10 @@ methods, with instant notifications going to Telegram by way of a Telegram bot.
 make build
 
 # List available skills
-./fogbot skill list
+./usr/local/bin/fogbot skill list
 
 # Enable a skill
-./fogbot skill enable ssh-monitor
+./usr/local/bin/fogbot skill enable ssh-monitor
 
 # Run in Docker Compose for testing
 make docker-up
@@ -40,10 +40,10 @@ make build
 make test-cli
 
 # Run with dry-run mode (no system modifications)
-FOGBOT_DRY_RUN=true ./fogbot daemon
+FOGBOT_DRY_RUN=true ./usr/local/bin/fogbot daemon
 
 # Build Debian package
-make package
+make pkg
 ```
 
 ## Directory Structure
@@ -110,7 +110,7 @@ Configuration via environment variables:
 ✅ Core infrastructure implemented:
 - Project scaffold and package structure
 - Skill system with 20 prebuilt skills (100-900 series)
-- Configuration management with SIGHUP reload
+- SIGHUP reload of config and enabled skills (no restart needed after `fogbot skill enable/disable`)
 - Notifier interface with Telegram implementation
 - TOFU authentication with challenge-response
 - Improved auth flow: `/start` generates code on-demand, scans any message for code

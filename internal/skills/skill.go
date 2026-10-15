@@ -76,6 +76,10 @@ type Skill interface {
 	// Returns true if system is already configured, false if commands need to run
 	CheckSystemState() (bool, error)
 
+	// SetupHints returns optional shell commands the user may want to run manually
+	// after enabling the skill (e.g. creating canary files). May return nil.
+	SetupHints() []string
+
 	// Watch starts the detection loop, returning alerts on the channel
 	Watch(ctx context.Context) (<-chan notifier.Alert, error)
 
@@ -140,4 +144,18 @@ func (r *Registry) Enabled() []Skill {
 		}
 	}
 	return result
+}
+
+// SeverityFromColor maps a skill YAML severity_default (red, yellow, green) to
+// an alert severity. Severity names are accepted as-is; anything else is "".
+func SeverityFromColor(color string) string {
+	switch color {
+	case "red", notifier.SeverityContact:
+		return notifier.SeverityContact
+	case "yellow", notifier.SeverityMovement:
+		return notifier.SeverityMovement
+	case "green", notifier.SeverityNominal:
+		return notifier.SeverityNominal
+	}
+	return ""
 }

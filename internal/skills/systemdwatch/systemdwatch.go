@@ -52,7 +52,8 @@ func (s *SystemdWatch) Requires() []string { return []string{"dbus", "systemd"} 
 func (s *SystemdWatch) Tags() []string {
 	return []string{"persistence", "systemd", "configuration"}
 }
-func (s *SystemdWatch) DropIns() []skills.DropIn { return nil }
+func (s *SystemdWatch) DropIns() []skills.DropIn    { return nil }
+func (s *SystemdWatch) SetupHints() []string        { return nil }
 func (s *SystemdWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
 	return []skills.SystemCommand{}, nil
 }
@@ -87,34 +88,56 @@ func (s *SystemdWatch) Configure(cfg map[string]interface{}) error {
 func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 	log.Printf("[systemd-watch] Watch() called - connecting to D-Bus")
 
-	// Connect to system bus
-	conn, err := dbus.SystemBus()
+	// Use a private connection: SystemBus() is shared process-wide, and closing
+	// it when the watcher stops would break a later restart on reload
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to system bus: %w", err)
 	}
 
 	alerts := make(chan notifier.Alert, 10)
 
-	// Subscribe to systemd manager signals
-	// We want to listen to org.freedesktop.systemd1.Manager on /org/freedesktop/systemd1
-	matchRules := []string{
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='Reloading'",
-		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitNew'",
-		// "type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitRemoved'",
-		"type='signal',interface='org.freedesktop.systemd1.Manager',member='UnitFilesChanged'",
+	// Subscribe to specific systemd manager signals via D-Bus match rules.
+	// Each entry maps a member name to the options used to add it.
+	type matchEntry struct {
+		member string
+		opts   []dbus.MatchOption
+	}
+	matchEntries := []matchEntry{
+		{
+			member: "Reloading",
+			opts: []dbus.MatchOption{
+				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
+				dbus.WithMatchMember("Reloading"),
+			},
+		},
+		{
+			member: "UnitFilesChanged",
+			opts: []dbus.MatchOption{
+				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
+				dbus.WithMatchMember("UnitFilesChanged"),
+			},
+		},
 	}
 
-	for _, rule := range matchRules {
-		if err := conn.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.systemd1.Manager")); err != nil {
+	for _, entry := range matchEntries {
+		if err := conn.AddMatchSignal(entry.opts...); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("adding match rule: %w", err)
+			return nil, fmt.Errorf("adding match rule for %s: %w", entry.member, err)
 		}
-		log.Printf("[systemd-watch] Added D-Bus match: %s", rule)
+		log.Printf("[systemd-watch] Added D-Bus match for member: %s", entry.member)
 	}
 
 	// Create signal channel
 	signals := make(chan *dbus.Signal, 10)
 	conn.Signal(signals)
+
+	// systemd only emits manager signals once a client has called Subscribe;
+	// the subscription is dropped when this connection closes
+	if call := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("subscribing to systemd signals: %w", call.Err)
+	}
 
 	log.Printf("[systemd-watch] Listening for systemd D-Bus signals")
 

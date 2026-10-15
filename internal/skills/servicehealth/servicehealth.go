@@ -25,6 +25,7 @@ type ServiceHealth struct {
 	config        map[string]interface{}
 	services      []string
 	checkInterval time.Duration
+	deadman       skills.Deadman
 }
 
 // New creates a new ServiceHealth skill
@@ -46,7 +47,8 @@ func (s *ServiceHealth) Why() string {
 }
 func (s *ServiceHealth) Requires() []string { return []string{"systemd"} }
 func (s *ServiceHealth) Tags() []string     { return []string{"deadman", "systemd", "health"} }
-func (s *ServiceHealth) DropIns() []skills.DropIn { return nil }
+func (s *ServiceHealth) DropIns() []skills.DropIn    { return nil }
+func (s *ServiceHealth) SetupHints() []string        { return nil }
 func (s *ServiceHealth) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -71,7 +73,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 
 	s.config = cfg
 
-	if svcs, ok := cfg["services"].([]interface{}); ok {
+	if svcs, ok := cfg["watch_services"].([]interface{}); ok {
 		s.services = make([]string, 0, len(svcs))
 		for _, svc := range svcs {
 			if svcStr, ok := svc.(string); ok {
@@ -80,7 +82,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 		}
 	}
 
-	if intervalStr, ok := cfg["check_interval"].(string); ok {
+	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			s.checkInterval = d
 		}
@@ -130,7 +132,23 @@ func (s *ServiceHealth) checkServices(alertChan chan<- notifier.Alert) {
 
 		status := strings.TrimSpace(string(output))
 
-		if err != nil || status != "active" {
+		if err == nil && status == "active" {
+			if s.deadman.Pass(service) {
+				alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: Service Stopped",
+				Activity:  fmt.Sprintf("Service %s is active again", service),
+				Location:  "systemd",
+				Time:      now,
+				Equipment: "systemctl",
+			}
+			}
+			continue
+		}
+
+		if s.deadman.Fail(service) {
 			alertChan <- notifier.Alert{
 				Severity:    notifier.SeverityContact,
 				SkillID:     SkillID,

@@ -3,10 +3,12 @@ package auditlog
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -52,14 +54,38 @@ type Tailer struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+
+	// pending holds keyed SYSCALL events, by audit serial, until their
+	// CWD/PATH records and EOE arrive. Only touched by the processing goroutine.
+	pending map[string]*pendingEvent
 }
+
+// pendingEvent is a SYSCALL event waiting for the rest of its records
+type pendingEvent struct {
+	event    *Event
+	paths    []map[string]string
+	received time.Time
+}
+
+// pendingTimeout is how long to wait for an EOE record before emitting an event anyway
+const pendingTimeout = 2 * time.Second
 
 var (
 	// Regex to extract key=value pairs from audit log lines
 	kvRegex = regexp.MustCompile(`(\w+)=(?:"([^"]*)"|(\S+))`)
-	// Regex to extract the rule key from "key=" field
-	keyRegex = regexp.MustCompile(`key="([^"]+)"`)
+	// Regex to extract the event serial from msg=audit(TIMESTAMP:SERIAL)
+	serialRegex = regexp.MustCompile(`msg=audit\([\d.]+:(\d+)\)`)
 )
+
+// x86_64Syscalls maps the syscall numbers the file and dir watchers care about
+// to names, for audit logs written in RAW format (ENRICHED adds SYSCALL=name).
+var x86_64Syscalls = map[string]string{
+	"2": "open", "76": "truncate", "82": "rename", "83": "mkdir", "84": "rmdir",
+	"85": "creat", "86": "link", "87": "unlink", "88": "symlink", "90": "chmod",
+	"91": "fchmod", "92": "chown", "93": "fchown", "94": "lchown", "257": "openat",
+	"258": "mkdirat", "260": "fchownat", "263": "unlinkat", "264": "renameat",
+	"265": "linkat", "266": "symlinkat", "268": "fchmodat", "316": "renameat2",
+}
 
 // NewTailer creates a new audit log tailer
 func NewTailer(logPath string) (*Tailer, error) {
@@ -71,6 +97,7 @@ func NewTailer(logPath string) (*Tailer, error) {
 
 	t := &Tailer{
 		subscribers: make(map[string][]chan<- Event),
+		pending:     make(map[string]*pendingEvent),
 		logPath:     logPath,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -153,10 +180,18 @@ func (t *Tailer) Stop() {
 func (t *Tailer) processLines() {
 	defer t.wg.Done()
 
+	ticker := time.NewTicker(pendingTimeout / 2)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
+
+		case <-ticker.C:
+			for _, event := range t.flushStale(time.Now()) {
+				t.distribute(event)
+			}
 
 		case line, ok := <-t.tail.Lines:
 			if !ok {
@@ -168,16 +203,151 @@ func (t *Tailer) processLines() {
 				continue
 			}
 
-			// Parse the line
-			event := t.parseLine(line.Text)
-			if event == nil {
-				continue // Not a line we care about
+			for _, event := range t.handleLine(line.Text, time.Now()) {
+				t.distribute(event)
 			}
-
-			// Distribute to subscribers
-			t.distribute(event)
 		}
 	}
+}
+
+// handleLine feeds one audit log line into event assembly and returns any
+// events that are now complete.
+//
+// auditd only puts the rule key on the SYSCALL record. The file path lives in
+// the PATH records and the working directory in the CWD record, which share the
+// SYSCALL's serial and are followed by an EOE record.
+func (t *Tailer) handleLine(line string, now time.Time) []*Event {
+	if t.pending == nil {
+		t.pending = make(map[string]*pendingEvent)
+	}
+
+	m := serialRegex.FindStringSubmatch(line)
+	if m == nil {
+		return nil
+	}
+	serial := m[1]
+
+	switch recordType(line) {
+	case "SYSCALL":
+		if event := t.parseLine(line); event != nil {
+			t.pending[serial] = &pendingEvent{event: event, received: now}
+		}
+	case "CWD":
+		if p := t.pending[serial]; p != nil {
+			p.event.Cwd = parseFields(line)["cwd"]
+		}
+	case "PATH":
+		if p := t.pending[serial]; p != nil {
+			p.paths = append(p.paths, parseFields(line))
+		}
+	case "EOE":
+		if p := t.pending[serial]; p != nil {
+			delete(t.pending, serial)
+			return append([]*Event{p.finish()}, t.flushStale(now)...)
+		}
+	}
+
+	return t.flushStale(now)
+}
+
+// flushStale emits pending events that never received an EOE record
+func (t *Tailer) flushStale(now time.Time) []*Event {
+	var done []*Event
+	for serial, p := range t.pending {
+		if now.Sub(p.received) >= pendingTimeout {
+			delete(t.pending, serial)
+			done = append(done, p.finish())
+		}
+	}
+	return done
+}
+
+// finish fills in the event's path from its PATH records
+func (p *pendingEvent) finish() *Event {
+	e := p.event
+
+	// Prefer the record for the object acted on over its parent directory
+	var chosen map[string]string
+	for _, want := range []string{"CREATE", "DELETE", "NORMAL", ""} {
+		for _, rec := range p.paths {
+			if want == "" || rec["nametype"] == want {
+				chosen = rec
+				break
+			}
+		}
+		if chosen != nil {
+			break
+		}
+	}
+
+	if chosen != nil {
+		name := chosen["name"]
+		if name != "" && name != "(null)" {
+			if !filepath.IsAbs(name) && e.Cwd != "" {
+				name = filepath.Join(e.Cwd, name)
+			}
+			e.Path = filepath.Clean(name)
+			e.Name = filepath.Base(e.Path)
+		}
+		if mode := chosen["mode"]; mode != "" {
+			e.Metadata["mode"] = mode
+		}
+	}
+
+	return e
+}
+
+// ruleKey returns the record's key= field. It walks the line field by field
+// rather than searching for `key="`, because comm and exe are attacker
+// controlled: a process named `xkey=` would otherwise shift the match onto a
+// bogus key and the event would be dropped unseen.
+func ruleKey(line string) (string, bool) {
+	key := ""
+	for _, match := range kvRegex.FindAllStringSubmatch(line, -1) {
+		if match[1] == "key" {
+			key = match[2] // only a quoted key is a real rule key
+		}
+	}
+	return key, key != ""
+}
+
+// recordType returns the value of the leading type= field
+func recordType(line string) string {
+	if !strings.HasPrefix(line, "type=") {
+		return ""
+	}
+	end := strings.IndexByte(line, ' ')
+	if end == -1 {
+		end = len(line)
+	}
+	return line[len("type="):end]
+}
+
+// parseFields extracts all key=value pairs from an audit record
+func parseFields(line string) map[string]string {
+	fields := make(map[string]string)
+	for _, match := range kvRegex.FindAllStringSubmatch(line, -1) {
+		fields[match[1]] = fieldValue(match)
+	}
+	return fields
+}
+
+// hexEncodedFields are written unquoted as hex by auditd when the value
+// contains spaces, quotes or control characters.
+var hexEncodedFields = map[string]bool{"comm": true, "exe": true, "cwd": true, "name": true, "proctitle": true}
+
+// fieldValue returns the value of a kvRegex match, decoding hex-encoded strings
+func fieldValue(match []string) string {
+	if match[2] != "" {
+		return match[2]
+	}
+	value := match[3]
+	if hexEncodedFields[match[1]] && value != "(null)" {
+		if decoded, err := hex.DecodeString(value); err == nil {
+			return string(decoded)
+		}
+	}
+	return value
 }
 
 // parseLine parses an audit log line into an Event
@@ -189,12 +359,10 @@ func (t *Tailer) parseLine(line string) *Event {
 	}
 
 	// Extract the rule key first to see if anyone cares about this event
-	keyMatch := keyRegex.FindStringSubmatch(line)
-	if len(keyMatch) < 2 {
+	key, ok := ruleKey(line)
+	if !ok {
 		return nil // No key, not from our rules
 	}
-
-	key := keyMatch[1]
 
 	// Check if anyone is subscribed to this key
 	t.mu.RLock()
@@ -245,10 +413,7 @@ func (t *Tailer) parseLine(line string) *Event {
 		}
 
 		key := match[1]
-		value := match[2]
-		if value == "" {
-			value = match[3]
-		}
+		value := fieldValue(match)
 
 		// Map common fields to Event struct
 		switch key {
@@ -280,12 +445,11 @@ func (t *Tailer) parseLine(line string) *Event {
 		}
 	}
 
-	// For PATH records, extract the path from metadata if not already set
-	// PATH records contain the actual file path in the "name" field
-	if event.RecordType == "PATH" && event.Path == "" {
-		if name, ok := event.Metadata["name"]; ok {
-			event.Path = name
-		}
+	// ENRICHED logs include the syscall name; RAW logs only have the number
+	if name := event.Metadata["SYSCALL"]; name != "" {
+		event.Syscall = name
+	} else if name, ok := x86_64Syscalls[event.Syscall]; ok && event.Metadata["arch"] == "c000003e" {
+		event.Syscall = name
 	}
 
 	return event
@@ -320,13 +484,13 @@ func ParseAuditLog(reader io.Reader) ([]Event, error) {
 		}
 
 		// This is a simplified parser - in production use the full tailer
-		keyMatch := keyRegex.FindStringSubmatch(line)
-		if len(keyMatch) < 2 {
+		key, ok := ruleKey(line)
+		if !ok {
 			continue
 		}
 
 		event := Event{
-			RuleKey:    keyMatch[1],
+			RuleKey:    key,
 			RawMessage: line,
 			Timestamp:  time.Now(),
 			Metadata:   make(map[string]string),

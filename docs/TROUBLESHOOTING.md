@@ -42,7 +42,7 @@ environment:
 
 Or when running directly:
 ```bash
-FOGBOT_INSECURE_TLS=true ./fogbot daemon
+FOGBOT_INSECURE_TLS=true ./usr/local/bin/fogbot daemon
 ```
 
 #### Option 3: Install CA Certificates in Running Container
@@ -177,11 +177,11 @@ cap_add:
 ### Running Without Docker
 ```bash
 # Option 1: Run as root
-sudo ./fogbot daemon
+sudo ./usr/local/bin/fogbot daemon
 
 # Option 2: Set capabilities on binary
-sudo setcap 'cap_net_admin,cap_audit_control,cap_sys_ptrace=+ep' ./fogbot
-./fogbot daemon
+sudo setcap 'cap_net_admin,cap_audit_control,cap_sys_ptrace=+ep' ./usr/local/bin/fogbot
+./usr/local/bin/fogbot daemon
 ```
 
 ---
@@ -191,7 +191,7 @@ sudo setcap 'cap_net_admin,cap_audit_control,cap_sys_ptrace=+ep' ./fogbot
 ### Enable Dry-Run
 ```bash
 # Environment variable
-FOGBOT_DRY_RUN=true ./fogbot daemon
+FOGBOT_DRY_RUN=true ./usr/local/bin/fogbot daemon
 
 # Or in docker-compose.yml:
 environment:

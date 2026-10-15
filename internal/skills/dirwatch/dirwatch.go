@@ -6,10 +6,13 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
@@ -88,6 +91,7 @@ func (d *DirWatch) Why() string {
 func (d *DirWatch) Requires() []string        { return []string{"auditd", "root"} }
 func (d *DirWatch) Tags() []string            { return []string{"filesystem", "persistence", "delivery", "auditd"} }
 func (d *DirWatch) DropIns() []skills.DropIn  { return nil }
+func (d *DirWatch) SetupHints() []string      { return nil }
 
 func (d *DirWatch) Enabled() bool {
 	d.mu.RLock()
@@ -148,7 +152,12 @@ func (d *DirWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCo
 	// Build auditctl commands for each path
 	// Use -p wa to watch for write and attribute changes (create, rename, chmod, etc.)
 	for _, path := range watchPaths {
-		cmd := fmt.Sprintf("auditctl -w %s -p wa -k %s", path, ruleKey)
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("watch path %q must be absolute", path)
+		}
+		// Quote the path: the command is split with shellquote before it runs,
+		// so a space would otherwise turn into extra auditctl arguments
+		cmd := fmt.Sprintf("auditctl -w %s -p wa -k %s", shellquote.Join(path), ruleKey)
 
 		commands = append(commands, skills.SystemCommand{
 			Command:     cmd,
@@ -310,10 +319,8 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 
 	// Determine file type from syscall or metadata
 	kind := "file"
-	if event.Metadata["mode"] != "" {
-		// Parse mode to determine if directory
-		// This is simplified - in reality we'd parse the octal mode
-		if strings.Contains(event.Metadata["mode"], "040") {
+	if mode, err := strconv.ParseUint(event.Metadata["mode"], 8, 32); err == nil {
+		if mode&syscall.S_IFMT == syscall.S_IFDIR {
 			kind = "directory"
 		}
 	}

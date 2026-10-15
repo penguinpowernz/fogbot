@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
@@ -38,8 +39,19 @@ func New(cfg skills.SkillConfig) *FileWatch {
 		requires:        cfg.Requires,
 		tags:            cfg.Tags,
 		config:          cfg.Config,
-		severityDefault: cfg.SeverityDefault,
+		severityDefault: skills.SeverityFromColor(cfg.SeverityDefault),
 		enabled:         false,
+	}
+}
+
+// NewDefault creates a FileWatch with hardcoded defaults for daemon registration.
+// Configure() will be called later with the actual YAML config.
+func NewDefault() *FileWatch {
+	return &FileWatch{
+		id:      500,
+		name:    "file-watch",
+		config:  map[string]interface{}{},
+		enabled: false,
 	}
 }
 
@@ -142,9 +154,17 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 		if perms == "" {
 			return nil, fmt.Errorf("no permissions set for path %s", path)
 		}
+		if strings.Trim(perms, "rwxa") != "" {
+			return nil, fmt.Errorf("invalid permissions %q for path %s: use any of r, w, x, a", perms, path)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("watch path %q must be absolute", path)
+		}
 
 		commands = append(commands, skills.SystemCommand{
-			Command:     fmt.Sprintf("auditctl -w %s -p %s -k %s", path, perms, ruleKey),
+			// Quote the path: the command is split with shellquote before it
+			// runs, so a space would otherwise turn into extra auditctl arguments
+			Command:     fmt.Sprintf("auditctl -w %s -p %s -k %s", shellquote.Join(path), perms, ruleKey),
 			Description: fmt.Sprintf("Monitor %s for %s", path, expandPerms(perms)),
 			Metadata: map[string]string{
 				"rule_key": ruleKey,
@@ -299,14 +319,11 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 		activity = fmt.Sprintf("%s [uid=%s]", activity, event.UID)
 	}
 
-	// Determine severity based on file and operation
+	// Every watched path is sensitive, so default to CONTACT; a lower configured
+	// default never applies to the auth files themselves
 	severity := f.severityDefault
-	if severity == "" {
+	if severity == "" || strings.HasPrefix(path, "/etc/shadow") || strings.HasPrefix(path, "/etc/sudoers") {
 		severity = notifier.SeverityContact
-		// Critical files get elevated severity
-		if strings.Contains(path, "/etc/shadow") || strings.Contains(path, "/etc/sudoers") {
-			severity = notifier.SeverityMovement
-		}
 	}
 
 	// Build equipment description with process info

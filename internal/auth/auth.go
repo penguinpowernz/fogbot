@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
 const (
@@ -40,11 +42,16 @@ type State struct {
 type RateLimiter struct {
 	mu         sync.Mutex
 	authorized map[string]*rateBucket
-	unauth     map[string]int // lifetime message count for unauthed chats
+	unauth     map[string]*rateBucket
 	maxAuth    int
 	maxUnauth  int
 	window     time.Duration
 }
+
+// unauthWindow is the period over which unauthorized chats get maxUnauth messages.
+// Long enough to stop code guessing (32^8 codes), short enough that a mistyped code
+// or re-authorizing after /reset doesn't lock the operator out until a restart.
+const unauthWindow = 10 * time.Minute
 
 type rateBucket struct {
 	count     int
@@ -83,11 +90,15 @@ func (s *State) Load() error {
 	return json.Unmarshal(data, s)
 }
 
-// Save persists state to disk
+// Save persists state to disk. Callers must not hold mu.
 func (s *State) Save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.saveLocked()
+}
 
+// saveLocked writes state to disk. Caller must hold mu (read or write).
+func (s *State) saveLocked() error {
 	// Ensure directory exists
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -99,26 +110,42 @@ func (s *State) Save() error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
+	selfwatch.ExpectWrite(s.path)
 	return os.WriteFile(s.path, data, 0600)
 }
 
-// IsAuthorized checks if a chat ID is authorized
+// IsAuthorized checks if a specific chat ID is authorized.
+// Pass an empty string only if you want to check whether nobody is authorized.
 func (s *State) IsAuthorized(chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.AuthorizedChat == chatID
+	return s.AuthorizedChat != "" && s.AuthorizedChat == chatID
+}
+
+// IsAnyoneAuthorized returns true if any chat has been authorized.
+// Use this for decisions that apply to the whole notifier (startup/shutdown messages).
+func (s *State) IsAnyoneAuthorized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AuthorizedChat != ""
+}
+
+// AuthorizedChatID returns the authorized chat ID, or "" if nobody is authorized
+func (s *State) AuthorizedChatID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AuthorizedChat
 }
 
 // Authorize marks a chat as authorized
 func (s *State) Authorize(chatID string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.AuthorizedChat = chatID
 	s.AuthorizedAt = time.Now()
 	s.CodeUsed = true
 	s.Code = "" // burn the code
-	s.mu.Unlock()
-
-	return s.Save()
+	return s.saveLocked()
 }
 
 // GetCode returns the current auth code
@@ -143,7 +170,7 @@ func (s *State) VerifyCode(code string) bool {
 		return false
 	}
 
-	return s.Code == code
+	return s.Code != "" && hmac.Equal([]byte(s.Code), []byte(code))
 }
 
 // MarkPendingAuth marks a chat as waiting for auth code (after /start)
@@ -171,13 +198,12 @@ func (s *State) ClearPendingAuth(chatID string) {
 // Deauthorize removes authorization from current chat
 func (s *State) Deauthorize() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.AuthorizedChat = ""
 	s.AuthorizedAt = time.Time{}
 	s.CodeUsed = false
 	s.Code = "" // Clear code - will be generated on next /start
-	s.mu.Unlock()
-
-	return s.Save()
+	return s.saveLocked()
 }
 
 // GenerateNewCode creates and stores a new auth code
@@ -240,7 +266,7 @@ func ValidateCode(code string) bool {
 func NewRateLimiter(maxAuth, maxUnauth int, window time.Duration) *RateLimiter {
 	return &RateLimiter{
 		authorized: make(map[string]*rateBucket),
-		unauth:     make(map[string]int),
+		unauth:     make(map[string]*rateBucket),
 		maxAuth:    maxAuth,
 		maxUnauth:  maxUnauth,
 		window:     window,
@@ -276,11 +302,23 @@ func (rl *RateLimiter) CheckUnauthorized(chatID string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	count := rl.unauth[chatID]
-	count++
-	rl.unauth[chatID] = count
+	now := time.Now()
 
-	return count <= rl.maxUnauth
+	// Forget expired buckets so random chats can't grow the map forever
+	for id, b := range rl.unauth {
+		if now.Sub(b.windowStart) > unauthWindow {
+			delete(rl.unauth, id)
+		}
+	}
+
+	bucket, exists := rl.unauth[chatID]
+	if !exists {
+		bucket = &rateBucket{windowStart: now}
+		rl.unauth[chatID] = bucket
+	}
+
+	bucket.count++
+	return bucket.count <= rl.maxUnauth
 }
 
 // SignCallback generates an HMAC-signed callback token
@@ -308,7 +346,7 @@ func VerifyCallback(token, secret string) (verb, noun string, valid bool) {
 	mac.Write([]byte(payload))
 	expectedSig := fmt.Sprintf("%x", mac.Sum(nil))[:16]
 
-	if providedSig != expectedSig {
+	if !hmac.Equal([]byte(providedSig), []byte(expectedSig)) {
 		return "", "", false
 	}
 

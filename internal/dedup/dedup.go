@@ -17,6 +17,7 @@ type Engine struct {
 	alerts     map[string]*alertState
 	ticker     *time.Ticker
 	stopClean  chan struct{}
+	closeOnce  sync.Once
 	suppressed int64 // counter for suppressed alerts
 }
 
@@ -24,11 +25,18 @@ type alertState struct {
 	firstSeen time.Time
 	lastSeen  time.Time
 	count     int
-	digest    []notifier.Alert // for building digest messages
 }
 
 // NewEngine creates a new deduplication engine
 func NewEngine(window time.Duration, maxBurst int) *Engine {
+	// time.NewTicker panics on a non-positive interval
+	if window <= 0 {
+		window = 5 * time.Minute
+	}
+	if maxBurst <= 0 {
+		maxBurst = 10
+	}
+
 	e := &Engine{
 		window:    window,
 		maxBurst:  maxBurst,
@@ -64,7 +72,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 			firstSeen: time.Now(),
 			lastSeen:  time.Now(),
 			count:     1,
-			digest:    []notifier.Alert{alert},
 		}
 		e.alerts[fingerprint] = state
 		return true, false, 0
@@ -73,7 +80,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	// Update state
 	state.lastSeen = time.Now()
 	state.count++
-	state.digest = append(state.digest, alert)
 
 	// Check if we're within the burst window
 	if time.Since(state.firstSeen) < e.window {
@@ -92,7 +98,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	state.firstSeen = time.Now()
 	state.lastSeen = time.Now()
 	state.count = 1
-	state.digest = []notifier.Alert{alert}
 
 	return true, true, digestCount
 }
@@ -146,8 +151,10 @@ func (e *Engine) ResetSuppressedCount() int64 {
 	return count
 }
 
-// Close shuts down the deduplication engine
+// Close shuts down the deduplication engine. Safe to call multiple times.
 func (e *Engine) Close() {
-	close(e.stopClean)
-	e.ticker.Stop()
+	e.closeOnce.Do(func() {
+		close(e.stopClean)
+		e.ticker.Stop()
+	})
 }

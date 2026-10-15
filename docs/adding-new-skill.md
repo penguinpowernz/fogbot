@@ -166,7 +166,7 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 
 ```bash
 # Build with new skill
-make build && make install
+make build
 
 # In Docker container
 docker-compose exec -T fogbot fogbot skill list

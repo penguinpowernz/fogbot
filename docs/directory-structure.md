@@ -114,7 +114,7 @@ Binary and systemd service (deployed to `/usr/`):
 ```
 usr/
 ├── local/bin/
-│   └── fogbot            # Main binary (after make install)
+│   └── fogbot            # Main binary (after make build)
 └── lib/systemd/system/
     └── fogbot.service    # Systemd unit file
 ```

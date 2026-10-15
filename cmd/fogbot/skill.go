@@ -9,6 +9,7 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/penguinpowernz/fogbot/internal/approval"
+	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
@@ -56,8 +57,8 @@ func (a *approvalTrackerAdapter) RevokeSkill(skillID int) error {
 
 func initSkillSystem(stateDir string) error {
 	var err error
-	// Use stateDir from global flags if provided, otherwise use build-time default
-	trackerPath := "/var/lib/fogbot"
+	// Use stateDir from global flags/env if provided, otherwise fall back to config default
+	trackerPath := config.DefaultStateDir
 	if stateDir != "" {
 		trackerPath = stateDir
 	}
@@ -67,6 +68,7 @@ func initSkillSystem(stateDir string) error {
 	}
 	adapter := &approvalTrackerAdapter{tracker: approvalTracker}
 	skillEnabler = skills.NewEnabler(adapter)
+	skillEnabler.SetDryRun(dryRun)
 	return nil
 }
 
@@ -172,7 +174,7 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
 	// Initialize skill system with stateDir from global flag if set
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -184,11 +186,7 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Check if already enabled
-	if skills.IsEnabled(skillName, "") {
-		fmt.Printf("Skill %s is already enabled\n", skillName)
-		return
-	}
+	alreadyEnabled := skills.IsEnabled(skillName, "")
 
 	// Load skill config
 	available, err := skills.LoadAvailable("")
@@ -213,14 +211,25 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	// Instantiate the skill implementation
 	skill := instantiateSkill(*skillConfig)
 	if skill == nil {
+		if alreadyEnabled {
+			fmt.Printf("Skill %s is already enabled\n", skillName)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "Skill %s does not have an implementation yet\n", skillName)
 		os.Exit(1)
 	}
 
-	// Use the Enabler to handle the full workflow
+	// Use the Enabler to handle the full workflow. For an enabled skill this
+	// reconciles the system with its current config, e.g. after the port list
+	// changed, which is how the daemon's repair-failed alert says to fix it.
 	if err := skillEnabler.Enable(skill, skillConfig.RequiresApproval); err != nil {
 		fmt.Fprintf(os.Stderr, "Error enabling skill: %v\n", err)
 		os.Exit(1)
+	}
+
+	if alreadyEnabled {
+		fmt.Printf("Skill %s is already enabled; system configuration is up to date\n", skillName)
+		return
 	}
 
 	// Create the symlink after successful enablement
@@ -254,7 +263,7 @@ func runSkillDisable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
 	// Initialize skill system to revoke approvals
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -484,7 +493,7 @@ func runSkillInteractive(cmd *cobra.Command, args []string) {
 	fmt.Println("\nApplying changes...")
 
 	// Initialize skill system with stateDir from global flag if set
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}

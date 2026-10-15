@@ -107,7 +107,7 @@ fogbot/
 
 ```bash
 # Build and test locally
-make build && make install
+make build
 
 # Run in Docker (recommended)
 make docker-up
@@ -117,7 +117,7 @@ make docker-logs
 docker-compose exec -T fogbot fogbot skill enable 510
 
 # Rebuild after code changes
-make build && make install
+make build
 docker-compose restart
 ```
 

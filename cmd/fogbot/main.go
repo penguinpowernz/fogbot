@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -11,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"sync"
 
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/baseline"
@@ -23,9 +24,11 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
+	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
 	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
+	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
@@ -65,7 +68,28 @@ func initFlagsFromEnv() {
 	if v := os.Getenv("FOGBOT_HOST_LABEL"); v != "" {
 		hostLabel = v
 	}
-	// dryRun defaults to false or env "true" - Cobra handles --dry-run=dry from CLI
+	if v := os.Getenv("FOGBOT_DRY_RUN"); v == "true" || v == "1" {
+		dryRun = true
+	}
+}
+
+// resolveStateDir picks the state directory: --state-dir or $FOGBOT_STATE_DIR,
+// then state_dir from the config file, then the built-in default.
+func resolveStateDir() string {
+	if stateDir != "" {
+		return stateDir
+	}
+	if cfg, err := config.Load(resolveConfigPath()); err == nil {
+		return cfg.StateDir
+	}
+	return config.DefaultStateDir
+}
+
+func resolveConfigPath() string {
+	if configPath != "" {
+		return configPath
+	}
+	return config.DefaultConfigPath
 }
 
 func main() {
@@ -76,15 +100,21 @@ func main() {
 		Use:   "fogbot",
 		Short: "Linux intrusion detection via Telegram",
 		Long:  "A Go daemon that monitors detection subsystems and reports anomalies via Telegram",
+		// Runs for every subcommand, so skill commands honour the path flags too
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// OverrideSkillsPaths ignores empty strings, preserving package-level env defaults
+			skills.OverrideSkillsPaths(skillsAvailable, skillsEnabled)
+		},
 	}
 
-	// Add global flags - available to ALL commands, not just daemon
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: $FOGBOT_CONFIG)")
-	rootCmd.PersistentFlags().StringVarP(&stateDir, "state-dir", "s", "", "State directory (default: $FOGBOT_STATE_DIR)")
-	rootCmd.PersistentFlags().StringVar(&skillsAvailable, "skills-available", "", "Skills available directory (default: $FOGBOT_SKILLS_AVAILABLE)")
-	rootCmd.PersistentFlags().StringVar(&skillsEnabled, "skills-enabled", "", "Skills enabled directory (default: $FOGBOT_SKILLS_ENABLED)")
-	rootCmd.PersistentFlags().StringVar(&hostLabel, "host-label", "", "Host label for alerts (default: $FOGBOT_HOST_LABEL or hostname)")
-	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "d", false, "Dry-run mode - no system modifications ($FOGBOT_DRY_RUN)")
+	// Add global flags - available to ALL commands, not just daemon.
+	// Defaults are the env values read above, so a flag overrides its env var.
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", configPath, "Path to config file (default: $FOGBOT_CONFIG)")
+	rootCmd.PersistentFlags().StringVarP(&stateDir, "state-dir", "s", stateDir, "State directory (default: $FOGBOT_STATE_DIR, else state_dir in config)")
+	rootCmd.PersistentFlags().StringVar(&skillsAvailable, "skills-available", skillsAvailable, "Skills available directory (default: $FOGBOT_SKILLS_AVAILABLE)")
+	rootCmd.PersistentFlags().StringVar(&skillsEnabled, "skills-enabled", skillsEnabled, "Skills enabled directory (default: $FOGBOT_SKILLS_ENABLED)")
+	rootCmd.PersistentFlags().StringVar(&hostLabel, "host-label", hostLabel, "Host label for alerts (default: $FOGBOT_HOST_LABEL or hostname)")
+	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "d", dryRun, "Dry-run mode - no system modifications ($FOGBOT_DRY_RUN)")
 
 	// Version command - standalone, doesn't need global flags
 	rootCmd.AddCommand(&cobra.Command{
@@ -99,13 +129,11 @@ func main() {
 		Use:   "daemon",
 		Short: "Start the fogbot daemon",
 		Run:   runDaemon,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return nil
-		},
 	})
 
 	// Add CLI subcommands (to be implemented) - now have access to global flags
 	rootCmd.AddCommand(newSkillCmd())
+	rootCmd.AddCommand(newBaselineCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -117,36 +145,33 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	daemonStartTime = time.Now() // Record start time for uptime tracking
 	log.Printf("fogbot %s starting...", Version)
 
-	// Build config path (CLI flag overrides env var)
-	configPathToUse := configPath
-	if configPathToUse == "" {
-		configPathToUse = config.DefaultConfigPath
-	}
+	configPathToUse := resolveConfigPath()
 
-	// Build state dir (CLI flag overrides env var)
-	stateDirToUse := stateDir
-	if stateDirToUse == "" {
-		stateDirToUse = config.DefaultStateDir
+	// Alerts name the real hostname (never host_label from the config file),
+	// unless overridden with --host-label or $FOGBOT_HOST_LABEL
+	machineHostname := hostLabel
+	if machineHostname == "" {
+		machineHostname, _ = os.Hostname()
 	}
-
-	// Get real machine hostname for alerts (always use actual hostname, never from config file)
-	machineHostname, _ := os.Hostname()
+	if dryRun {
+		log.Printf("Dry-run mode: system commands will be printed, not run")
+	}
 
 	// Load config
 	cfg, err := config.Load(configPathToUse)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("Config file not found, using defaults")
-			cfg = &config.Config{}
-			cfg.StateDir = stateDirToUse
+		// Load wraps the error, so os.IsNotExist can't see through it
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Printf("Config file %s not found, using defaults", configPathToUse)
+			cfg = config.Default()
 		} else {
 			log.Fatalf("Failed to load config: %v", err)
 		}
 	}
 
-	// Override state dir with CLI flag if provided
-	if stateDirToUse != "" {
-		cfg.StateDir = stateDirToUse
+	// --state-dir / $FOGBOT_STATE_DIR override state_dir from the config file
+	if stateDir != "" {
+		cfg.StateDir = stateDir
 	}
 
 	// Create state directory
@@ -162,7 +187,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	// Check authorization status
-	if authState.IsAuthorized("") {
+	if authState.IsAnyoneAuthorized() {
 		log.Printf("Already authorized (chat_id in state.json)")
 	} else {
 		log.Printf("Not yet authorized - waiting for /start command from Telegram")
@@ -201,9 +226,10 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(logfreshness.New())
 	registry.Register(servicehealth.New())
 	registry.Register(auditdhealth.New())
+	registry.Register(filewatch.NewDefault())
+	registry.Register(porttripwires.NewDefault())
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
-	// Note: filewatch skill requires config from YAML, registered in CLI command
 
 	// Log registered skills
 	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))
@@ -211,57 +237,29 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		log.Printf("  - #%d: %s", skill.ID(), skill.Name())
 	}
 
-	// Build skills directories (CLI flags override env vars)
-	skillsAvailToUse := skillsAvailable
-	if skillsAvailToUse == "" {
-		skillsAvailToUse = os.Getenv("FOGBOT_SKILLS_AVAILABLE")
-	}
-
-	skillsEnabToUse := skillsEnabled
-	if skillsEnabToUse == "" {
-		skillsEnabToUse = os.Getenv("FOGBOT_SKILLS_ENABLED")
-	}
-
-	// Override skills package paths so all functions use the correct directories
-	skills.OverrideSkillsPaths(skillsAvailToUse, skillsEnabToUse)
-
 	// Load enabled skills from filesystem
-	log.Printf("Loading enabled skills from: %s", skillsEnabToUse)
-	enabledSkillConfigs, err := skills.LoadEnabledConfigs(skillsEnabToUse)
+	log.Printf("Loading enabled skills from: %s", skills.SkillsEnabledPath)
+	enabledSkillConfigs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
 	if err != nil {
 		log.Fatalf("Failed to load enabled skills: %v", err)
 	}
 	log.Printf("Found %d enabled skill configs", len(enabledSkillConfigs))
 
-	// Configure and enable skills based on loaded configs
-	for _, skillCfg := range enabledSkillConfigs {
-		log.Printf("Loading skill #%d (%s) from config file", skillCfg.ID, skillCfg.Name)
-		skill, ok := registry.Get(skillCfg.ID)
-		if !ok {
-			log.Printf("Warning: skill %d (%s) enabled but not in registry", skillCfg.ID, skillCfg.Name)
-			continue
-		}
+	// All watchers feed one bus, so skills can be started and stopped on reload
+	alertBus := make(chan notifier.Alert, 100)
+	go processAlerts(ctx, alertBus, dedupEngine, notif, machineHostname)
 
-		if err := skill.Configure(skillCfg.Config); err != nil {
-			log.Printf("Failed to configure skill %s: %v", skillCfg.Name, err)
-			continue
-		}
+	skillMgr := newSkillManager(ctx, registry, alertBus, machineHostname)
 
-		skill.SetEnabled(true)
-		log.Printf("✓ Enabled skill #%d: %s", skillCfg.ID, skillCfg.Name)
+	// Startup repair: restore system config (auditctl rules, iptables rules) that
+	// didn't survive a reboot, using only previously approved commands
+	if err := initSkillSystem(cfg.StateDir); err != nil {
+		log.Printf("Startup repair unavailable: %v", err)
+	} else {
+		skillMgr.repair = skillEnabler.ReapplyOnStartup
 	}
 
-	// Start all enabled skills
-	alertChannels := make([]<-chan notifier.Alert, 0)
-	for _, skill := range registry.Enabled() {
-		alertChan, err := skill.Watch(ctx)
-		if err != nil {
-			log.Printf("Failed to start skill %s: %v", skill.Name(), err)
-			continue
-		}
-		alertChannels = append(alertChannels, alertChan)
-		log.Printf("Started watcher for skill #%d: %s", skill.ID(), skill.Name())
-	}
+	log.Printf("Skills: %s", skillMgr.apply(enabledSkillConfigs))
 
 	// Start selfwatch to monitor fogbot's own files
 	binaryPath, _ := os.Executable()
@@ -273,18 +271,13 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Printf("Failed to start selfwatch: %v", err)
 		} else {
-			alertChannels = append(alertChannels, selfwatchChan)
+			go forwardAlerts(ctx, selfwatchChan, alertBus)
 			log.Printf("Started selfwatch monitoring")
 		}
 	}
 
-	// Merge all alert channels and process through dedup engine
-	if notif != nil {
-		go mergeAndSendAlerts(ctx, alertChannels, dedupEngine, notif)
-	}
-
 	// Send startup message
-	if notif != nil && authState.IsAuthorized("") {
+	if notif != nil && authState.IsAnyoneAuthorized() {
 		startupAlert := notifier.Alert{
 			Severity:  notifier.SeverityNominal,
 			Title:     "fogbot online",
@@ -320,18 +313,35 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		case sig := <-sigChan:
 			switch sig {
 			case syscall.SIGHUP:
-				log.Printf("Received SIGHUP, reloading config...")
+				log.Printf("Received SIGHUP, reloading config and skills...")
 				if err := cfg.Reload(configPathToUse); err != nil {
 					log.Printf("Failed to reload config: %v", err)
 				} else {
 					log.Printf("Config reloaded successfully")
 				}
 
+				configs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
+				if err != nil {
+					log.Printf("Failed to load enabled skills, keeping current watchers: %v", err)
+					break
+				}
+				res := skillMgr.apply(configs)
+				log.Printf("Skills reloaded: %s", res)
+				if res.changed() {
+					skillMgr.send(notifier.Alert{
+						Severity:  notifier.SeverityNominal,
+						Title:     "fogbot skills reloaded",
+						Activity:  res.String(),
+						Time:      time.Now(),
+						Equipment: "reload",
+					})
+				}
+
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Printf("Received %s, shutting down...", sig)
 
 				// Send shutdown message
-				if notif != nil && authState.IsAuthorized("") {
+				if notif != nil && authState.IsAnyoneAuthorized() {
 					shutdownAlert := notifier.Alert{
 						Severity:  notifier.SeverityMovement,
 						Title:     "fogbot offline",
@@ -470,13 +480,6 @@ func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState 
 	// Clear pending status
 	authState.ClearPendingAuth(chatID)
 
-	// Update the Telegram notifier's chatID so future alerts work
-	if tg, ok := notif.(*telegram.Telegram); ok {
-		if err := tg.UpdateChatID(chatID); err != nil {
-			log.Printf("Failed to update Telegram chatID: %v", err)
-		}
-	}
-
 	log.Printf("Chat %s authorized successfully", chatID)
 
 	// Send success message
@@ -501,7 +504,7 @@ func handleHelp(ctx context.Context, cmd notifier.Command, authState *auth.State
 			"• /status - View system status\n" +
 			"• /reset - Deauthorize this chat\n" +
 			"• hi / hello - Test connection\n" +
-			"• /approve - Approve pending baselines\n\n" +
+			"\nBaselines are approved on the host: sudo fogbot baseline approve\n\n" +
 			"*About:*\n" +
 			"fogbot monitors your Linux system for intrusions and reports alerts via Telegram.\n\n" +
 			"More info: github.com/penguinpowernz/fogbot"
@@ -562,73 +565,43 @@ func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname str
 }
 
 func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Notifier) {
-	log.Printf("Approve command from authorized chat")
-	sendSimpleMessage(ctx, notif, cmd.ChatID, "✅ Baseline approved\n\n(Full approval flow coming in Phase 2)")
+	// Approving over Telegram would let whoever holds the authorized chat
+	// whitelist a planted SUID binary, so it must be done on the host as root.
+	sendSimpleMessage(ctx, notif, cmd.ChatID, "Baselines can't be approved over Telegram.\n\n"+
+		"On the host, review and approve with:\n"+
+		"  sudo fogbot baseline diff\n"+
+		"  sudo fogbot baseline approve")
 }
 
-// mergeAndSendAlerts merges all skill alert channels and sends them via the notifier
-func mergeAndSendAlerts(ctx context.Context, alertChannels []<-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier) {
-	// Create a merged channel using fan-in pattern
-	merged := make(chan notifier.Alert)
-	var wg sync.WaitGroup
-
-	// Start goroutine for each input channel
-	for _, ch := range alertChannels {
-		wg.Add(1)
-		go func(c <-chan notifier.Alert) {
-			defer wg.Done()
-			for {
-				select {
-				case alert, ok := <-c:
-					if !ok {
-						return // channel closed
-					}
-					select {
-					case merged <- alert:
-					case <-ctx.Done():
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(ch)
-	}
-
-	// Close merged channel when all inputs are done
-	go func() {
-		wg.Wait()
-		close(merged)
-	}()
-
-	// Process merged alerts
+// processAlerts passes alerts from the bus through dedup and sends them. Without
+// a notifier alerts are only logged, but the bus is still drained so watchers
+// never block.
+func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case alert, ok := <-merged:
-			if !ok {
-				// All channels closed
-				return
+		case alert := <-bus:
+			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
+			if !shouldSend {
+				log.Printf("[alert-suppressed] %s: %s (dedup)", alert.Severity, alert.Title)
+				continue
 			}
 
-			// Pass through dedup engine
-			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
+			if isDigest {
+				alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
+			}
+			if alert.Host == "" {
+				alert.Host = hostname
+			}
+			log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
 
-			if shouldSend {
-				// Modify alert if it's a digest
-				if isDigest {
-					alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
-				}
-
-				log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
-
-				if err := notif.Send(ctx, alert); err != nil {
-					log.Printf("Failed to send alert: %v", err)
-				}
-			} else {
-				log.Printf("[alert-suppressed] %s: %s (dedup)", alert.Severity, alert.Title)
+			if notif == nil {
+				continue
+			}
+			if err := notif.Send(ctx, alert); err != nil {
+				log.Printf("Failed to send alert: %v", err)
 			}
 		}
 	}

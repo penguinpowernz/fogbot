@@ -43,12 +43,14 @@ The skill implementation deduces commands:
 // internal/skills/porttripwires/porttripwires.go
 func (p *PortTripwires) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
     // Generates iptables commands with non-obvious prefixes like "fw-510-in:"
-    // Built from config at runtime, not hardcoded
+    // Built from config at runtime, not hardcoded. Includes `iptables -D` for
+    // tripwire rules left over from an earlier port list.
 }
 
 func (p *PortTripwires) CheckSystemState() (bool, error) {
-    // Checks if iptables rules already exist by looking for rule identifiers
-    // Returns true if already configured, false if commands need to run
+    // Compares the rules carrying our identifiers (iptables -S / -C) against
+    // the rule the config calls for, so a changed port list counts as
+    // not configured. Returns true only when no commands need to run.
 }
 ```
 
@@ -121,6 +123,15 @@ When user runs `fogbot skill disable 510`:
 3. Next enable will require fresh approval
 
 This ensures users must re-approve commands if they re-enable a skill.
+
+## Changing an Enabled Skill's Config
+
+Editing the config of an enabled skill (e.g. the port list for 510) changes the
+commands it deduces, and those new commands aren't approved yet. On SIGHUP or
+restart, startup repair skips them and sends a "Startup Repair Failed" alert.
+To apply the change, run `fogbot skill enable 510` again: for an enabled skill
+it re-checks the system and prompts for approval of just the new commands
+(such as removing the old rule and adding the new one).
 
 ## Startup Reapplication
 

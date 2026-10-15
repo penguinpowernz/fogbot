@@ -27,6 +27,7 @@ type AuditdHealth struct {
 	checkInterval   time.Duration
 	auditLogPath    string
 	maxLogAge       time.Duration
+	deadman         skills.Deadman
 }
 
 // New creates a new AuditdHealth skill
@@ -49,7 +50,8 @@ func (a *AuditdHealth) Why() string {
 }
 func (a *AuditdHealth) Requires() []string { return []string{"auditd"} }
 func (a *AuditdHealth) Tags() []string     { return []string{"deadman", "auditd", "health"} }
-func (a *AuditdHealth) DropIns() []skills.DropIn { return nil }
+func (a *AuditdHealth) DropIns() []skills.DropIn    { return nil }
+func (a *AuditdHealth) SetupHints() []string        { return nil }
 func (a *AuditdHealth) Enabled() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -74,17 +76,17 @@ func (a *AuditdHealth) Configure(cfg map[string]interface{}) error {
 
 	a.config = cfg
 
-	if intervalStr, ok := cfg["check_interval"].(string); ok {
+	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			a.checkInterval = d
 		}
 	}
 
-	if path, ok := cfg["audit_log_path"].(string); ok {
+	if path, ok := cfg["log_path"].(string); ok {
 		a.auditLogPath = path
 	}
 
-	if maxAgeStr, ok := cfg["max_log_age"].(string); ok {
+	if maxAgeStr, ok := cfg["log_freshness_threshold"].(string); ok {
 		if d, err := time.ParseDuration(maxAgeStr); err == nil {
 			a.maxLogAge = d
 		}
@@ -129,6 +131,9 @@ func (a *AuditdHealth) checkHealth(alertChan chan<- notifier.Alert) {
 	status := strings.TrimSpace(string(output))
 
 	if err != nil || status != "active" {
+		if !a.deadman.Fail("service") {
+			return
+		}
 		alertChan <- notifier.Alert{
 			Severity:    notifier.SeverityContact,
 			SkillID:     SkillID,
@@ -145,6 +150,19 @@ func (a *AuditdHealth) checkHealth(alertChan chan<- notifier.Alert) {
 		return
 	}
 
+	if a.deadman.Pass("service") {
+		alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: auditd Stopped",
+				Activity:  "auditd service is active again",
+				Location:  "systemd",
+				Time:      now,
+				Equipment: "systemctl",
+			}
+	}
+
 	// Check if audit log is being written
 	a.mu.RLock()
 	logPath := a.auditLogPath
@@ -153,7 +171,7 @@ func (a *AuditdHealth) checkHealth(alertChan chan<- notifier.Alert) {
 
 	info, err := os.Stat(logPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && a.deadman.Fail("log-missing") {
 			alertChan <- notifier.Alert{
 				Severity:    notifier.SeverityContact,
 				SkillID:     SkillID,
@@ -171,8 +189,36 @@ func (a *AuditdHealth) checkHealth(alertChan chan<- notifier.Alert) {
 		return
 	}
 
+	if a.deadman.Pass("log-missing") {
+		alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: audit.log Missing",
+				Activity:  "audit.log exists again",
+				Location:  logPath,
+				Time:      now,
+				Equipment: "stat",
+			}
+	}
+
 	age := now.Sub(info.ModTime())
-	if age > maxAge {
+	if age <= maxAge {
+		if a.deadman.Pass("log-stale") {
+			alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: Stale audit.log",
+				Activity:  "audit.log is being written again",
+				Location:  logPath,
+				Time:      now,
+				Equipment: "mtime",
+			}
+		}
+		return
+	}
+	if a.deadman.Fail("log-stale") {
 		alertChan <- notifier.Alert{
 			Severity:    notifier.SeverityContact,
 			SkillID:     SkillID,

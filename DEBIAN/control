@@ -6,7 +6,7 @@ Architecture: all
 Maintainer: Robert Mcleod <robert@penguinpower.co.nz>
 Essential: no
 Homepage: https://github.com/penguinpower.co.nz>
-Installed-Size: 13958
+Installed-Size: 14741
 Depends: auditd
 Description: A chatbot to help detect intrusions
   This is a longer description
