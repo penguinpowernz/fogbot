@@ -170,7 +170,8 @@ func (c *Config) Reload(path string) error {
 	// Copy new values (mutex already held)
 	c.Telegram = newCfg.Telegram
 	c.HostLabel = newCfg.HostLabel
-	c.StateDir = newCfg.StateDir
+	// StateDir is not reloaded: state files are already open, and it may have
+	// been overridden by --state-dir
 	c.Dedup = newCfg.Dedup
 
 	return nil

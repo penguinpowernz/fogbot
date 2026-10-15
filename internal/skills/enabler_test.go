@@ -90,3 +90,16 @@ func TestReapplyOnStartup_AlreadyConfigured(t *testing.T) {
 		t.Fatal("nothing should run when the system is already configured")
 	}
 }
+
+func TestExecuteCommand_DryRunDoesNotRun(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	e := NewEnabler(&fakeTracker{})
+	e.SetDryRun(true)
+
+	if err := e.executeCommand(appendCmds(out, "x")[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("dry-run executed the command")
+	}
+}

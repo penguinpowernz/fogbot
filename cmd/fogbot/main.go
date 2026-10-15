@@ -68,7 +68,28 @@ func initFlagsFromEnv() {
 	if v := os.Getenv("FOGBOT_HOST_LABEL"); v != "" {
 		hostLabel = v
 	}
-	// dryRun defaults to false or env "true" - Cobra handles --dry-run=dry from CLI
+	if v := os.Getenv("FOGBOT_DRY_RUN"); v == "true" || v == "1" {
+		dryRun = true
+	}
+}
+
+// resolveStateDir picks the state directory: --state-dir or $FOGBOT_STATE_DIR,
+// then state_dir from the config file, then the built-in default.
+func resolveStateDir() string {
+	if stateDir != "" {
+		return stateDir
+	}
+	if cfg, err := config.Load(resolveConfigPath()); err == nil {
+		return cfg.StateDir
+	}
+	return config.DefaultStateDir
+}
+
+func resolveConfigPath() string {
+	if configPath != "" {
+		return configPath
+	}
+	return config.DefaultConfigPath
 }
 
 func main() {
@@ -79,15 +100,21 @@ func main() {
 		Use:   "fogbot",
 		Short: "Linux intrusion detection via Telegram",
 		Long:  "A Go daemon that monitors detection subsystems and reports anomalies via Telegram",
+		// Runs for every subcommand, so skill commands honour the path flags too
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// OverrideSkillsPaths ignores empty strings, preserving package-level env defaults
+			skills.OverrideSkillsPaths(skillsAvailable, skillsEnabled)
+		},
 	}
 
-	// Add global flags - available to ALL commands, not just daemon
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Path to config file (default: $FOGBOT_CONFIG)")
-	rootCmd.PersistentFlags().StringVarP(&stateDir, "state-dir", "s", "", "State directory (default: $FOGBOT_STATE_DIR)")
-	rootCmd.PersistentFlags().StringVar(&skillsAvailable, "skills-available", "", "Skills available directory (default: $FOGBOT_SKILLS_AVAILABLE)")
-	rootCmd.PersistentFlags().StringVar(&skillsEnabled, "skills-enabled", "", "Skills enabled directory (default: $FOGBOT_SKILLS_ENABLED)")
-	rootCmd.PersistentFlags().StringVar(&hostLabel, "host-label", "", "Host label for alerts (default: $FOGBOT_HOST_LABEL or hostname)")
-	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "d", false, "Dry-run mode - no system modifications ($FOGBOT_DRY_RUN)")
+	// Add global flags - available to ALL commands, not just daemon.
+	// Defaults are the env values read above, so a flag overrides its env var.
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", configPath, "Path to config file (default: $FOGBOT_CONFIG)")
+	rootCmd.PersistentFlags().StringVarP(&stateDir, "state-dir", "s", stateDir, "State directory (default: $FOGBOT_STATE_DIR, else state_dir in config)")
+	rootCmd.PersistentFlags().StringVar(&skillsAvailable, "skills-available", skillsAvailable, "Skills available directory (default: $FOGBOT_SKILLS_AVAILABLE)")
+	rootCmd.PersistentFlags().StringVar(&skillsEnabled, "skills-enabled", skillsEnabled, "Skills enabled directory (default: $FOGBOT_SKILLS_ENABLED)")
+	rootCmd.PersistentFlags().StringVar(&hostLabel, "host-label", hostLabel, "Host label for alerts (default: $FOGBOT_HOST_LABEL or hostname)")
+	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run", "d", dryRun, "Dry-run mode - no system modifications ($FOGBOT_DRY_RUN)")
 
 	// Version command - standalone, doesn't need global flags
 	rootCmd.AddCommand(&cobra.Command{
@@ -102,9 +129,6 @@ func main() {
 		Use:   "daemon",
 		Short: "Start the fogbot daemon",
 		Run:   runDaemon,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return nil
-		},
 	})
 
 	// Add CLI subcommands (to be implemented) - now have access to global flags
@@ -121,20 +145,17 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	daemonStartTime = time.Now() // Record start time for uptime tracking
 	log.Printf("fogbot %s starting...", Version)
 
-	// Build config path (CLI flag overrides env var)
-	configPathToUse := configPath
-	if configPathToUse == "" {
-		configPathToUse = config.DefaultConfigPath
-	}
+	configPathToUse := resolveConfigPath()
 
-	// Build state dir (CLI flag overrides env var)
-	stateDirToUse := stateDir
-	if stateDirToUse == "" {
-		stateDirToUse = config.DefaultStateDir
+	// Alerts name the real hostname (never host_label from the config file),
+	// unless overridden with --host-label or $FOGBOT_HOST_LABEL
+	machineHostname := hostLabel
+	if machineHostname == "" {
+		machineHostname, _ = os.Hostname()
 	}
-
-	// Get real machine hostname for alerts (always use actual hostname, never from config file)
-	machineHostname, _ := os.Hostname()
+	if dryRun {
+		log.Printf("Dry-run mode: system commands will be printed, not run")
+	}
 
 	// Load config
 	cfg, err := config.Load(configPathToUse)
@@ -148,9 +169,9 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Override state dir with CLI flag if provided
-	if stateDirToUse != "" {
-		cfg.StateDir = stateDirToUse
+	// --state-dir / $FOGBOT_STATE_DIR override state_dir from the config file
+	if stateDir != "" {
+		cfg.StateDir = stateDir
 	}
 
 	// Create state directory
@@ -215,11 +236,6 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	for _, skill := range registry.All() {
 		log.Printf("  - #%d: %s", skill.ID(), skill.Name())
 	}
-
-	// Override skills package paths so all functions use the correct directories.
-	// initFlagsFromEnv() already populated skillsAvailable/skillsEnabled from env vars;
-	// OverrideSkillsPaths ignores empty strings, preserving package-level env defaults.
-	skills.OverrideSkillsPaths(skillsAvailable, skillsEnabled)
 
 	// Load enabled skills from filesystem
 	log.Printf("Loading enabled skills from: %s", skills.SkillsEnabledPath)

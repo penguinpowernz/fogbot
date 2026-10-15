@@ -68,6 +68,7 @@ func initSkillSystem(stateDir string) error {
 	}
 	adapter := &approvalTrackerAdapter{tracker: approvalTracker}
 	skillEnabler = skills.NewEnabler(adapter)
+	skillEnabler.SetDryRun(dryRun)
 	return nil
 }
 
@@ -173,7 +174,7 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
 	// Initialize skill system with stateDir from global flag if set
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -255,7 +256,7 @@ func runSkillDisable(cmd *cobra.Command, args []string) {
 	skillNameOrID := args[0]
 
 	// Initialize skill system to revoke approvals
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}
@@ -485,7 +486,7 @@ func runSkillInteractive(cmd *cobra.Command, args []string) {
 	fmt.Println("\nApplying changes...")
 
 	// Initialize skill system with stateDir from global flag if set
-	if err := initSkillSystem(stateDir); err != nil {
+	if err := initSkillSystem(resolveStateDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing skill system: %v\n", err)
 		os.Exit(1)
 	}

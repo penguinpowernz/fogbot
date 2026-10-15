@@ -8,7 +8,6 @@ import (
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/penguinpowernz/fogbot/internal/baseline"
-	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -47,11 +46,7 @@ func newBaselineCmd() *cobra.Command {
 }
 
 func baselineManager() *baseline.Manager {
-	dir := stateDir
-	if dir == "" {
-		dir = config.DefaultStateDir
-	}
-	return baseline.NewManager(dir)
+	return baseline.NewManager(resolveStateDir())
 }
 
 // loadBaselineChanges prints the pending baseline's changes against the

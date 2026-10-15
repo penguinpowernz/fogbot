@@ -14,6 +14,9 @@ import (
 // Enabler handles the process of enabling skills with user approval
 type Enabler struct {
 	approvalTracker ApprovalTracker
+
+	// dryRun prints commands instead of running them
+	dryRun bool
 }
 
 // CommandInfo interface for commands that can be approved
@@ -52,7 +55,11 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 	// Step 1: Check if system is already configured
 	isConfigured, err := skill.CheckSystemState()
 	if err != nil {
-		return fmt.Errorf("failed to check system state: %w", err)
+		if !e.dryRun {
+			return fmt.Errorf("failed to check system state: %w", err)
+		}
+		// Dry-run usually runs unprivileged, where the check can't work
+		fmt.Printf("  [dry-run] Could not check system state (%v), assuming not configured\n", err)
 	}
 
 	if isConfigured {
@@ -169,8 +176,17 @@ func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
 	return nil
 }
 
+// SetDryRun makes the enabler print commands instead of running them
+func (e *Enabler) SetDryRun(enabled bool) {
+	e.dryRun = enabled
+}
+
 // executeCommand runs a system command
 func (e *Enabler) executeCommand(cmd SystemCommand) error {
+	if e.dryRun {
+		fmt.Printf("  [dry-run] Would execute: %s\n", cmd.Command)
+		return nil
+	}
 	fmt.Printf("  Executing: %s\n", cmd.Description)
 
 	parts, err := shellquote.Split(cmd.Command)
