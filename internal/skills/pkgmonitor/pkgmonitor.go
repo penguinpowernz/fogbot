@@ -1,7 +1,6 @@
 package pkgmonitor
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -9,9 +8,9 @@ import (
 	"os"
 	"regexp"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/hpcloud/tail"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
@@ -98,69 +97,38 @@ func (p *PkgMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (p *PkgMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	openFile := func() (*os.File, *bufio.Reader, error) {
-		f, err := os.Open(p.logPath)
-		if err != nil {
-			return nil, nil, err
-		}
-		if _, err := f.Seek(0, io.SeekEnd); err != nil {
-			f.Close()
-			return nil, nil, err
-		}
-		return f, bufio.NewReader(f), nil
+	// Follow from the end of the file. ReOpen handles rotation and truncation by
+	// reading the replacement file from the start, and waits if the file is missing.
+	cfg := tail.Config{Follow: true, ReOpen: true, Logger: tail.DiscardingLogger}
+	if _, err := os.Stat(p.logPath); err == nil {
+		// Only skip existing content; a file created later is read from the start
+		cfg.Location = &tail.SeekInfo{Offset: 0, Whence: io.SeekEnd}
 	}
-
-	file, reader, err := openFile()
+	t, err := tail.TailFile(p.logPath, cfg)
 	if err != nil {
-		log.Printf("[pkg-monitor] Failed to open %s: %v", p.logPath, err)
+		log.Printf("[pkg-monitor] Failed to tail %s: %v", p.logPath, err)
 		return
 	}
-	defer file.Close()
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	defer t.Cleanup()
+	defer t.Stop()
 
 	log.Printf("[pkg-monitor] Watching %s", p.logPath)
-
-	var lastIno uint64
-	if fi, err := file.Stat(); err == nil {
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			lastIno = st.Ino
-		}
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case <-ticker.C:
-			// Detect log rotation: check if the inode on disk differs from the open file
-			if fi, err := os.Stat(p.logPath); err == nil {
-				if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Ino != lastIno {
-					log.Printf("[pkg-monitor] Log rotation detected, reopening %s", p.logPath)
-					file.Close()
-					file, reader, err = openFile()
-					if err != nil {
-						log.Printf("[pkg-monitor] Failed to reopen %s: %v", p.logPath, err)
-						return
-					}
-					lastIno = st.Ino
-				}
+		case line, ok := <-t.Lines:
+			if !ok {
+				log.Printf("[pkg-monitor] Tail of %s stopped: %v", p.logPath, t.Err())
+				return
 			}
-
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						break
-					}
-					log.Printf("[pkg-monitor] Read error: %v", err)
-					return
-				}
-
-				p.processLine(line, alertChan)
+			if line.Err != nil {
+				log.Printf("[pkg-monitor] Read error: %v", line.Err)
+				continue
 			}
+			p.processLine(line.Text, alertChan)
 		}
 	}
 }

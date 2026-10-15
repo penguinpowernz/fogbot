@@ -1,7 +1,6 @@
 package sshmonitor
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -10,9 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/hpcloud/tail"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
@@ -137,72 +136,43 @@ func (s *SSHMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
-	openFile := func() (*os.File, *bufio.Reader, error) {
-		f, err := os.Open(s.authLogPath)
-		if err != nil {
-			return nil, nil, err
-		}
-		if _, err := f.Seek(0, io.SeekEnd); err != nil {
-			f.Close()
-			return nil, nil, err
-		}
-		return f, bufio.NewReader(f), nil
+	// Follow from the end of the file. ReOpen handles rotation and truncation by
+	// reading the replacement file from the start, and waits if the file is missing.
+	cfg := tail.Config{Follow: true, ReOpen: true, Logger: tail.DiscardingLogger}
+	if _, err := os.Stat(s.authLogPath); err == nil {
+		// Only skip existing content; a file created later is read from the start
+		cfg.Location = &tail.SeekInfo{Offset: 0, Whence: io.SeekEnd}
 	}
-
-	file, reader, err := openFile()
+	t, err := tail.TailFile(s.authLogPath, cfg)
 	if err != nil {
-		log.Printf("[ssh-monitor] Failed to open %s: %v", s.authLogPath, err)
+		log.Printf("[ssh-monitor] Failed to tail %s: %v", s.authLogPath, err)
 		return
 	}
-	defer file.Close()
+	defer t.Cleanup()
+	defer t.Stop()
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	log.Printf("[ssh-monitor] Watching %s", s.authLogPath)
 
-	var lastIno uint64
-	if fi, err := file.Stat(); err == nil {
-		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-			lastIno = st.Ino
-		}
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
+		case line, ok := <-t.Lines:
+			if !ok {
+				log.Printf("[ssh-monitor] Tail of %s stopped: %v", s.authLogPath, t.Err())
+				return
+			}
+			if line.Err != nil {
+				log.Printf("[ssh-monitor] Read error: %v", line.Err)
+				continue
+			}
+			s.processLine(line.Text, alertChan)
+
 		case <-ticker.C:
-			// Detect log rotation: check if the inode on disk differs from the open file
-			if fi, err := os.Stat(s.authLogPath); err == nil {
-				if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Ino != lastIno {
-					log.Printf("[ssh-monitor] Log rotation detected, reopening %s", s.authLogPath)
-					file.Close()
-					file, reader, err = openFile()
-					if err != nil {
-						log.Printf("[ssh-monitor] Failed to reopen %s: %v", s.authLogPath, err)
-						return
-					}
-					lastIno = st.Ino
-				}
-			}
-
-			// Read new lines
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						break // no more data right now
-					}
-					log.Printf("[ssh-monitor] Read error: %v", err)
-					return
-				}
-
-				// Process the line
-				s.processLine(line, alertChan)
-			}
-
 			// Clean up old failure timestamps
 			s.cleanupFailures()
 		}
