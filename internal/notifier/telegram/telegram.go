@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -211,13 +212,15 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	var chatID int64
 	var callbackID string
 
-	if update.Message != nil {
+	// Chat and the callback's Message are optional in the Bot API (e.g. a
+	// callback from an inline-mode message has no Message), so guard against nil
+	if update.Message != nil && update.Message.Chat != nil {
 		text = update.Message.Text
 		chatID = update.Message.Chat.ID
-	} else if update.CallbackQuery != nil {
-		text = update.CallbackQuery.Data
-		chatID = update.CallbackQuery.Message.Chat.ID
-		callbackID = update.CallbackQuery.ID
+	} else if cq := update.CallbackQuery; cq != nil && cq.Message != nil && cq.Message.Chat != nil {
+		text = cq.Data
+		chatID = cq.Message.Chat.ID
+		callbackID = cq.ID
 	} else {
 		return nil
 	}
@@ -341,8 +344,13 @@ func (t *Telegram) apiCall(method string, params url.Values) ([]byte, error) {
 
 	resp, err := t.httpClient.PostForm(apiURL, params)
 	if err != nil {
-		// Provide more detailed error for common issues
-		return nil, fmt.Errorf("api call failed (check network/TLS certs): %w", err)
+		// A *url.Error's message includes the request URL, which embeds the bot
+		// token, so report only the underlying error
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("%s call failed (check network/TLS certs): %w", method, err)
 	}
 	defer resp.Body.Close()
 
