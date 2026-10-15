@@ -7,18 +7,18 @@ make build          # Compile
 make test-cli       # Run CLI tests
 make docker-up      # Start Docker Compose test env
 make docker-logs    # View logs
-make package        # Build Debian package
+make pkg        # Build Debian package
 ```
 
 ## Commands
 
 ```bash
-./fogbot skill list            # List available skills
-./fogbot skill enable <skill>  # Enable a skill
-./fogbot daemon                # Run as daemon
+./usr/local/bin/fogbot skill list            # List available skills
+./usr/local/bin/fogbot skill enable <skill>  # Enable a skill
+./usr/local/bin/fogbot daemon                # Run as daemon
 
 # Dry-run mode (no system changes)
-FOGBOT_DRY_RUN=true ./fogbot daemon
+FOGBOT_DRY_RUN=true ./usr/local/bin/fogbot daemon
 ```
 
 ## Environment Variables

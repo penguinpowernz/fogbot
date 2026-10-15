@@ -1,4 +1,4 @@
-.PHONY: build install clean test docker package
+.PHONY: build pkg clean test test-cli docker-build docker-up docker-down docker-logs docker-shell help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
@@ -7,11 +7,11 @@ LDFLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 build:
 	@echo "Building fogbot $(VERSION)..."
 	go build -ldflags "$(LDFLAGS)" -o usr/local/bin/fogbot ./cmd/fogbot
-	@echo "Build complete: fogbot"
+	@echo "Build complete: usr/local/bin/fogbot"
 
 pkg: build
 	ian pkg -x
-	
+
 clean:
 	@echo "Cleaning build artifacts.."
 	rm -f fogbot
@@ -48,7 +48,7 @@ test-cli: build
 	export FOGBOT_SKILLS_ENABLED=$(PWD)/etc/fogbot/skills-enabled; \
 	export FOGBOT_CONFIG=$(PWD)/etc/fogbot/config.yaml; \
 	export FOGBOT_STATE_DIR=/tmp/fogbot-test; \
-	./fogbot skill list
+	./usr/local/bin/fogbot skill list
 
 
 help:

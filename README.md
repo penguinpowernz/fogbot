@@ -22,10 +22,10 @@ methods, with instant notifications going to Telegram by way of a Telegram bot.
 make build
 
 # List available skills
-./fogbot skill list
+./usr/local/bin/fogbot skill list
 
 # Enable a skill
-./fogbot skill enable ssh-monitor
+./usr/local/bin/fogbot skill enable ssh-monitor
 
 # Run in Docker Compose for testing
 make docker-up
@@ -40,10 +40,10 @@ make build
 make test-cli
 
 # Run with dry-run mode (no system modifications)
-FOGBOT_DRY_RUN=true ./fogbot daemon
+FOGBOT_DRY_RUN=true ./usr/local/bin/fogbot daemon
 
 # Build Debian package
-make package
+make pkg
 ```
 
 ## Directory Structure
