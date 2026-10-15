@@ -60,7 +60,7 @@ func NewTelegram(token string, chatID int64, authState *auth.State) *Telegram {
 		chatID:      chatID,
 		httpClient:  httpClient,
 		authState:   authState,
-		rateLimiter: auth.NewRateLimiter(10, 3, 60*time.Second),
+		rateLimiter: auth.NewRateLimiter(10, 5, 60*time.Second),
 	}
 }
 

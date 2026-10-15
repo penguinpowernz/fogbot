@@ -40,11 +40,16 @@ type State struct {
 type RateLimiter struct {
 	mu         sync.Mutex
 	authorized map[string]*rateBucket
-	unauth     map[string]int // lifetime message count for unauthed chats
+	unauth     map[string]*rateBucket
 	maxAuth    int
 	maxUnauth  int
 	window     time.Duration
 }
+
+// unauthWindow is the period over which unauthorized chats get maxUnauth messages.
+// Long enough to stop code guessing (32^8 codes), short enough that a mistyped code
+// or re-authorizing after /reset doesn't lock the operator out until a restart.
+const unauthWindow = 10 * time.Minute
 
 type rateBucket struct {
 	count     int
@@ -258,7 +263,7 @@ func ValidateCode(code string) bool {
 func NewRateLimiter(maxAuth, maxUnauth int, window time.Duration) *RateLimiter {
 	return &RateLimiter{
 		authorized: make(map[string]*rateBucket),
-		unauth:     make(map[string]int),
+		unauth:     make(map[string]*rateBucket),
 		maxAuth:    maxAuth,
 		maxUnauth:  maxUnauth,
 		window:     window,
@@ -294,11 +299,23 @@ func (rl *RateLimiter) CheckUnauthorized(chatID string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	count := rl.unauth[chatID]
-	count++
-	rl.unauth[chatID] = count
+	now := time.Now()
 
-	return count <= rl.maxUnauth
+	// Forget expired buckets so random chats can't grow the map forever
+	for id, b := range rl.unauth {
+		if now.Sub(b.windowStart) > unauthWindow {
+			delete(rl.unauth, id)
+		}
+	}
+
+	bucket, exists := rl.unauth[chatID]
+	if !exists {
+		bucket = &rateBucket{windowStart: now}
+		rl.unauth[chatID] = bucket
+	}
+
+	bucket.count++
+	return bucket.count <= rl.maxUnauth
 }
 
 // SignCallback generates an HMAC-signed callback token
