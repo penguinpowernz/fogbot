@@ -25,7 +25,6 @@ type alertState struct {
 	firstSeen time.Time
 	lastSeen  time.Time
 	count     int
-	digest    []notifier.Alert // for building digest messages
 }
 
 // NewEngine creates a new deduplication engine
@@ -73,7 +72,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 			firstSeen: time.Now(),
 			lastSeen:  time.Now(),
 			count:     1,
-			digest:    []notifier.Alert{alert},
 		}
 		e.alerts[fingerprint] = state
 		return true, false, 0
@@ -82,7 +80,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	// Update state
 	state.lastSeen = time.Now()
 	state.count++
-	state.digest = append(state.digest, alert)
 
 	// Check if we're within the burst window
 	if time.Since(state.firstSeen) < e.window {
@@ -101,7 +98,6 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	state.firstSeen = time.Now()
 	state.lastSeen = time.Now()
 	state.count = 1
-	state.digest = []notifier.Alert{alert}
 
 	return true, true, digestCount
 }
