@@ -170,7 +170,7 @@ func (s *State) VerifyCode(code string) bool {
 		return false
 	}
 
-	return s.Code == code
+	return s.Code != "" && hmac.Equal([]byte(s.Code), []byte(code))
 }
 
 // MarkPendingAuth marks a chat as waiting for auth code (after /start)
@@ -346,7 +346,7 @@ func VerifyCallback(token, secret string) (verb, noun string, valid bool) {
 	mac.Write([]byte(payload))
 	expectedSig := fmt.Sprintf("%x", mac.Sum(nil))[:16]
 
-	if providedSig != expectedSig {
+	if !hmac.Equal([]byte(providedSig), []byte(expectedSig)) {
 		return "", "", false
 	}
 
