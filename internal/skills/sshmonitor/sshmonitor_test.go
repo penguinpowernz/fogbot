@@ -430,3 +430,35 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 		t.Error("CheckSystemState should always return true for ssh-monitor")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// processLine: IPv6 sources
+// ---------------------------------------------------------------------------
+
+func TestProcessLine_IPv6Login(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	m.processLine(`Apr 26 10:00:01 host sshd[1234]: Accepted publickey for alice from 2001:db8::1 port 54321 ssh2`, ch)
+
+	alerts := drainAlerts(ch)
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert for IPv6 login, got %d", len(alerts))
+	}
+	if !m.knownIPs["2001:db8::1"] {
+		t.Errorf("expected IPv6 address to be learned, known IPs: %v", m.knownIPs)
+	}
+}
+
+func TestProcessLine_IPv6BruteForce(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	for i := 0; i < m.bruteForceThreshold; i++ {
+		m.processLine(`Apr 26 10:00:01 host sshd[1234]: Failed password for root from ::ffff:10.0.0.5 port 22 ssh2`, ch)
+	}
+
+	if len(drainAlerts(ch)) == 0 {
+		t.Fatal("expected a brute-force alert for repeated IPv6 failures")
+	}
+}

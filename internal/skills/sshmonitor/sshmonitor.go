@@ -35,12 +35,15 @@ type SSHMonitor struct {
 	authLogPath          string
 }
 
+// ipPattern matches IPv4 and IPv6 addresses (sshd logs IPv6 unbracketed, e.g. 2001:db8::1)
+const ipPattern = `[0-9A-Fa-f:.]+`
+
 var (
 	// SSH login patterns
-	acceptedPattern     = regexp.MustCompile(`Accepted (password|publickey) for (\S+) from ([\d.]+) port (\d+)`)
-	failedPattern       = regexp.MustCompile(`Failed (password|publickey) for (\S+|invalid user \S+) from ([\d.]+)`)
-	invalidUserPattern  = regexp.MustCompile(`Invalid user (\S+) from ([\d.]+)`)
-	rootLoginPattern    = regexp.MustCompile(`Accepted .* for root from ([\d.]+)`)
+	acceptedPattern     = regexp.MustCompile(`Accepted (password|publickey) for (\S+) from (` + ipPattern + `) port (\d+)`)
+	failedPattern       = regexp.MustCompile(`Failed (password|publickey) for (\S+|invalid user \S+) from (` + ipPattern + `)`)
+	invalidUserPattern  = regexp.MustCompile(`Invalid user (\S+) from (` + ipPattern + `)`)
+	rootLoginPattern    = regexp.MustCompile(`Accepted .* for root from (` + ipPattern + `)`)
 
 	// sudo/su patterns
 	sudoPattern         = regexp.MustCompile(`sudo:\s+(\S+) : TTY=(\S+) ; PWD=(\S+) ; USER=(\S+) ; COMMAND=(.+)`)
