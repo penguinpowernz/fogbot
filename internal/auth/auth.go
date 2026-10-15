@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
 const (
@@ -108,6 +110,7 @@ func (s *State) saveLocked() error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
+	selfwatch.ExpectWrite(s.path)
 	return os.WriteFile(s.path, data, 0600)
 }
 

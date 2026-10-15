@@ -15,12 +15,53 @@ import (
 
 // SelfWatch monitors fogbot's own files for tampering
 type SelfWatch struct {
-	mu              sync.RWMutex
-	binaryPath      string
-	configPath      string
-	stateDir        string
-	watcher         *fsnotify.Watcher
-	expectedWrites  map[string]time.Time // whitelist of expected writes
+	mu         sync.RWMutex
+	binaryPath string
+	configPath string
+	stateDir   string
+	watcher    *fsnotify.Watcher
+}
+
+// ownWriteGrace is how long after ExpectWrite events on a path are treated as
+// the daemon's own. A single os.WriteFile produces several inotify events.
+const ownWriteGrace = 2 * time.Second
+
+// ownWrites holds paths this process is about to write, mapped to when the
+// grace period ends. Package-level so writers (auth, baseline) can register
+// without holding a SelfWatch.
+var ownWrites = struct {
+	sync.Mutex
+	until map[string]time.Time
+}{until: make(map[string]time.Time)}
+
+// ExpectWrite marks path as about to be written or removed by this process, so
+// the resulting inotify events aren't reported as tampering. Call it before
+// writing.
+func ExpectWrite(path string) {
+	ownWrites.Lock()
+	defer ownWrites.Unlock()
+	ownWrites.until[filepath.Clean(path)] = time.Now().Add(ownWriteGrace)
+}
+
+func isOwnWrite(path string) bool {
+	ownWrites.Lock()
+	defer ownWrites.Unlock()
+
+	now := time.Now()
+	for p, until := range ownWrites.until {
+		if now.After(until) {
+			delete(ownWrites.until, p)
+		}
+	}
+	_, ok := ownWrites.until[filepath.Clean(path)]
+	return ok
+}
+
+// stateFileHints says which host-side command legitimately changes a state file
+var stateFileHints = map[string]string{
+	"suid_baseline.json":         "fogbot baseline approve",
+	"suid_baseline.pending.json": "fogbot baseline approve",
+	"approved-commands.json":     "fogbot skill enable/disable",
 }
 
 // New creates a new SelfWatch instance
@@ -31,11 +72,10 @@ func New(binaryPath, configPath, stateDir string) (*SelfWatch, error) {
 	}
 
 	return &SelfWatch{
-		binaryPath:     binaryPath,
-		configPath:     configPath,
-		stateDir:       stateDir,
-		watcher:        watcher,
-		expectedWrites: make(map[string]time.Time),
+		binaryPath: binaryPath,
+		configPath: configPath,
+		stateDir:   stateDir,
+		watcher:    watcher,
 	}, nil
 }
 
@@ -104,6 +144,8 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 	defer close(alertChan)
 	defer s.watcher.Close()
 
+	lastAlert := make(map[string]time.Time)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -114,49 +156,13 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 				return
 			}
 
-			// Check if this was an expected write
-			if s.isExpectedWrite(event.Name) {
-				log.Printf("[selfwatch] Expected write to %s, ignoring", event.Name)
-				continue
-			}
-
-			// Alert on modifications to watched files
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Printf("[selfwatch] Unexpected modification to %s", event.Name)
-
-				alertChan <- notifier.Alert{
-					Severity:    notifier.SeverityContact,
-					SkillID:     999, // special ID for selfwatch
-					SkillName:   "selfwatch",
-					Title:       "fogbot File Tamper Detected",
-					Size:        "1 file",
-					Activity:    fmt.Sprintf("Unexpected modification to %s", filepath.Base(event.Name)),
-					Location:    event.Name,
-					Unit:        "filesystem",
-					Time:        time.Now(),
-					Equipment:   "inotify",
-					Host:        hostname,
-					Acknowledge: true,
+			if alert, ok := s.classify(event, hostname); ok {
+				// One write produces several events; report each file once per burst
+				if last, seen := lastAlert[event.Name]; seen && time.Since(last) < ownWriteGrace {
+					continue
 				}
-			}
-
-			if event.Op&fsnotify.Remove == fsnotify.Remove {
-				log.Printf("[selfwatch] File removed: %s", event.Name)
-
-				alertChan <- notifier.Alert{
-					Severity:    notifier.SeverityContact,
-					SkillID:     999,
-					SkillName:   "selfwatch",
-					Title:       "fogbot File Deleted",
-					Size:        "1 file",
-					Activity:    fmt.Sprintf("Watched file deleted: %s", filepath.Base(event.Name)),
-					Location:    event.Name,
-					Unit:        "filesystem",
-					Time:        time.Now(),
-					Equipment:   "inotify",
-					Host:        hostname,
-					Acknowledge: true,
-				}
+				lastAlert[event.Name] = time.Now()
+				alertChan <- alert
 			}
 
 		case err, ok := <-s.watcher.Errors:
@@ -168,31 +174,59 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 	}
 }
 
-// WhitelistWrite marks a write as expected (to avoid false positives from fogbot's own writes)
-func (s *SelfWatch) WhitelistWrite(path string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.expectedWrites[path] = time.Now().Add(5 * time.Second) // valid for 5 seconds
-}
-
-func (s *SelfWatch) isExpectedWrite(path string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	expiry, exists := s.expectedWrites[path]
-	if !exists {
-		return false
+// classify turns an inotify event into an alert, if it warrants one.
+//
+// The binary and config are never written by fogbot, so any change is CONTACT.
+// State files are also written by fogbot's own CLI (e.g. baseline approval),
+// which can't be told apart from an attacker here, so changes not made by the
+// daemon itself are MOVEMENT with a note on which command explains them.
+func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Alert, bool) {
+	var verb string
+	switch {
+	case event.Op&fsnotify.Write == fsnotify.Write:
+		verb = "modified"
+	case event.Op&fsnotify.Remove == fsnotify.Remove:
+		verb = "deleted"
+	default:
+		return notifier.Alert{}, false
 	}
 
-	if time.Now().After(expiry) {
-		delete(s.expectedWrites, path)
-		return false
+	if isOwnWrite(event.Name) {
+		return notifier.Alert{}, false
 	}
 
-	// Consume the whitelist entry
-	delete(s.expectedWrites, path)
-	return true
+	name := filepath.Base(event.Name)
+	alert := notifier.Alert{
+		Severity:    notifier.SeverityContact,
+		SkillID:     999, // special ID for selfwatch
+		SkillName:   "selfwatch",
+		Title:       "fogbot File Tamper Detected",
+		Size:        "1 file",
+		Activity:    fmt.Sprintf("Unexpected change: %s %s", name, verb),
+		Location:    event.Name,
+		Unit:        "filesystem",
+		Time:        time.Now(),
+		Equipment:   "inotify",
+		Host:        hostname,
+		Acknowledge: true,
+	}
+
+	if s.stateDir != "" && filepath.Dir(filepath.Clean(event.Name)) == filepath.Clean(s.stateDir) {
+		alert.Severity = notifier.SeverityMovement
+		alert.Title = "fogbot State Changed"
+		alert.Activity = fmt.Sprintf("%s %s outside the fogbot daemon", name, verb)
+		alert.Acknowledge = false
+		if cmd, ok := stateFileHints[name]; ok {
+			alert.Unit = "expected only after running: " + cmd
+		} else {
+			alert.Unit = "not expected: only the daemon writes this file"
+			alert.Severity = notifier.SeverityContact
+			alert.Acknowledge = true
+		}
+	}
+
+	log.Printf("[selfwatch] %s: %s", alert.Title, alert.Activity)
+	return alert, true
 }
 
 // AddWatch dynamically adds a new file to watch (for drop-ins created at runtime)

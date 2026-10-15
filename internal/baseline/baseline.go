@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
 // SuidEntry represents a single SUID/SGID file
@@ -119,6 +121,7 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 		return fmt.Errorf("failed to marshal baseline: %w", err)
 	}
 
+	selfwatch.ExpectWrite(path)
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write pending baseline: %w", err)
 	}
