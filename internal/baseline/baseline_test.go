@@ -390,3 +390,53 @@ func TestSavePendingSuid_FilePermissions(t *testing.T) {
 		t.Errorf("expected file permissions 0600, got %04o", perm)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Baseline.Changed
+// ---------------------------------------------------------------------------
+
+func TestChanged_DetectsInPlaceReplacement(t *testing.T) {
+	bl := &Baseline{Entries: map[string]SuidEntry{
+		"/usr/bin/sudo":   {Path: "/usr/bin/sudo", Hash: "aaa", Mode: 0o4755},
+		"/usr/bin/passwd": {Path: "/usr/bin/passwd", Hash: "bbb", Mode: 0o4755},
+	}}
+	current := map[string]SuidEntry{
+		"/usr/bin/sudo":   {Path: "/usr/bin/sudo", Hash: "evil", Mode: 0o4755},
+		"/usr/bin/passwd": {Path: "/usr/bin/passwd", Hash: "bbb", Mode: 0o4755},
+		"/tmp/new":        {Path: "/tmp/new", Hash: "ccc", Mode: 0o4755},
+	}
+
+	changed := bl.Changed(current)
+	if len(changed) != 1 || changed[0].Path != "/usr/bin/sudo" {
+		t.Fatalf("expected only /usr/bin/sudo to be changed, got %+v", changed)
+	}
+}
+
+func TestChanged_DetectsOwnershipAndModeChange(t *testing.T) {
+	bl := &Baseline{Entries: map[string]SuidEntry{
+		"/a": {Path: "/a", Hash: "h", UID: 1000, Mode: 0o2755},
+		"/b": {Path: "/b", Hash: "h", UID: 0, Mode: 0o2755},
+	}}
+	current := map[string]SuidEntry{
+		"/a": {Path: "/a", Hash: "h", UID: 0, Mode: 0o2755},
+		"/b": {Path: "/b", Hash: "h", UID: 0, Mode: 0o6755},
+	}
+	if got := bl.Changed(current); len(got) != 2 {
+		t.Fatalf("expected 2 changed entries, got %+v", got)
+	}
+}
+
+func TestChanged_IgnoresUnreadableHash(t *testing.T) {
+	// HashFile errors leave Hash empty; that alone isn't a change
+	bl := &Baseline{Entries: map[string]SuidEntry{"/a": {Path: "/a", Hash: "h"}}}
+	if got := bl.Changed(map[string]SuidEntry{"/a": {Path: "/a", Hash: ""}}); len(got) != 0 {
+		t.Fatalf("expected no change, got %+v", got)
+	}
+}
+
+func TestChanged_NilBaseline(t *testing.T) {
+	var bl *Baseline
+	if got := bl.Changed(map[string]SuidEntry{"/a": {Path: "/a"}}); got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}

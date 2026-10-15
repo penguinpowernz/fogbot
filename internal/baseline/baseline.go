@@ -205,6 +205,31 @@ func (baseline *Baseline) Diff(current map[string]SuidEntry) []SuidEntry {
 	return new
 }
 
+// Changed returns entries that are in the baseline but whose content, mode or
+// ownership differs, e.g. a SUID binary replaced in place.
+func (baseline *Baseline) Changed(current map[string]SuidEntry) []SuidEntry {
+	if baseline == nil {
+		return nil
+	}
+
+	baseline.mu.RLock()
+	defer baseline.mu.RUnlock()
+
+	changed := make([]SuidEntry, 0)
+	for path, entry := range current {
+		old, exists := baseline.Entries[path]
+		if !exists {
+			continue
+		}
+		hashDiffers := old.Hash != "" && entry.Hash != "" && old.Hash != entry.Hash
+		if hashDiffers || old.Mode != entry.Mode || old.UID != entry.UID || old.GID != entry.GID {
+			changed = append(changed, entry)
+		}
+	}
+
+	return changed
+}
+
 // HashFile computes SHA256 hash of a file without loading it all into memory.
 func HashFile(path string) (string, error) {
 	f, err := os.Open(path)

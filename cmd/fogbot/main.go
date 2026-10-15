@@ -297,7 +297,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			log.Fatalf("Failed to start command handler: %v", err)
 		}
 
-		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname)
+		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname, baselineManager)
 	}
 
 	// Setup signal handling
@@ -349,7 +349,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
+func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string, baselineManager *baseline.Manager) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -386,7 +386,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 
 			case notifier.CmdApprove:
 				if authState.IsAuthorized(cmd.ChatID) {
-					handleApprove(ctx, cmd, notif)
+					handleApprove(ctx, cmd, baselineManager, notif)
 				}
 
 			default:
@@ -553,9 +553,23 @@ func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname str
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
-func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Notifier) {
+func handleApprove(ctx context.Context, cmd notifier.Command, baselineManager *baseline.Manager, notif notifier.Notifier) {
 	log.Printf("Approve command from authorized chat")
-	sendSimpleMessage(ctx, notif, cmd.ChatID, "✅ Baseline approved\n\n(Full approval flow coming in Phase 2)")
+
+	pending, err := baselineManager.LoadPendingSuid()
+	if err != nil || pending == nil {
+		sendSimpleMessage(ctx, notif, cmd.ChatID, "Nothing to approve: no pending SUID baseline")
+		return
+	}
+
+	if err := baselineManager.ApproveSuid(cmd.ChatID); err != nil {
+		log.Printf("Failed to approve SUID baseline: %v", err)
+		sendSimpleMessage(ctx, notif, cmd.ChatID, "❌ Failed to approve SUID baseline, check the fogbot logs")
+		return
+	}
+
+	log.Printf("SUID baseline approved by chat %s (%d entries)", cmd.ChatID, len(pending.Entries))
+	sendSimpleMessage(ctx, notif, cmd.ChatID, fmt.Sprintf("✅ SUID baseline approved (%d binaries)", len(pending.Entries)))
 }
 
 // mergeAndSendAlerts merges all skill alert channels and sends them via the notifier

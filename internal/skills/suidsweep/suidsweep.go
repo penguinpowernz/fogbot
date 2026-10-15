@@ -139,6 +139,10 @@ func (s *SuidSweep) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 	ticker := time.NewTicker(s.sweepInterval)
 	defer ticker.Stop()
 
+	// Changes already reported (path -> hash), so each one alerts once rather
+	// than on every sweep until the operator approves the new state
+	reported := make(map[string]string)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -161,28 +165,47 @@ func (s *SuidSweep) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 				continue
 			}
 
-			// Find new SUID binaries
 			newBinaries := bl.Diff(current)
+			changedBinaries := bl.Changed(current)
+			if len(newBinaries) == 0 && len(changedBinaries) == 0 {
+				continue
+			}
+			log.Printf("[suid-sweep] Found %d new and %d changed SUID/SGID binaries", len(newBinaries), len(changedBinaries))
 
-			if len(newBinaries) > 0 {
-				log.Printf("[suid-sweep] Found %d new SUID/SGID binaries!", len(newBinaries))
+			// Offer the current state for approval so the operator can accept
+			// legitimate changes (e.g. a package upgrade) with /approve
+			if err := s.baselineManager.SavePendingSuid(&baseline.Baseline{
+				Type:      "suid",
+				Entries:   current,
+				CreatedAt: time.Now(),
+			}); err != nil {
+				log.Printf("[suid-sweep] Failed to save pending baseline: %v", err)
+			}
 
-				// Send alert for each new binary
-				for _, binary := range newBinaries {
-					alertChan <- notifier.Alert{
-						Severity:    notifier.SeverityContact,
-						SkillID:     SkillID,
-						SkillName:   SkillName,
-						Title:       "New SUID/SGID Binary Detected",
-						Size:        "1 binary",
-						Activity:    fmt.Sprintf("SUID/SGID binary appeared: %s", filepath.Base(binary.Path)),
-						Location:    binary.Path,
-						Unit:        fmt.Sprintf("uid=%d gid=%d mode=%o", binary.UID, binary.GID, binary.Mode),
-						Time:        time.Now(),
-						Equipment:   "filesystem-sweep",
-						Acknowledge: true,
-					}
+			report := func(binary baseline.SuidEntry, title, verb string) {
+				if h, ok := reported[binary.Path]; ok && h == binary.Hash {
+					return
 				}
+				reported[binary.Path] = binary.Hash
+				alertChan <- notifier.Alert{
+					Severity:    notifier.SeverityContact,
+					SkillID:     SkillID,
+					SkillName:   SkillName,
+					Title:       title,
+					Size:        "1 binary",
+					Activity:    fmt.Sprintf("SUID/SGID binary %s: %s (send /approve if expected)", verb, filepath.Base(binary.Path)),
+					Location:    binary.Path,
+					Unit:        fmt.Sprintf("uid=%d gid=%d mode=%o", binary.UID, binary.GID, binary.Mode),
+					Time:        time.Now(),
+					Equipment:   "filesystem-sweep",
+					Acknowledge: true,
+				}
+			}
+			for _, binary := range newBinaries {
+				report(binary, "New SUID/SGID Binary Detected", "appeared")
+			}
+			for _, binary := range changedBinaries {
+				report(binary, "SUID/SGID Binary Modified", "modified")
 			}
 		}
 	}
