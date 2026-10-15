@@ -368,3 +368,65 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 	}
 }
 
+
+// ---------------------------------------------------------------------------
+// checkLogs: alerts on state changes, not every poll
+// ---------------------------------------------------------------------------
+
+func TestCheckLogs_AlertsOnceThenRecovers(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "app.log")
+	touchFile(t, logFile, time.Now().Add(-10*time.Minute))
+
+	l := New()
+	l.watchedLogs = map[string]time.Duration{logFile: 5 * time.Minute}
+	ch := make(chan notifier.Alert, 10)
+
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 1 || got[0].Title != "[DEADMAN] Stale Log File" {
+		t.Fatalf("expected one stale alert, got %+v", got)
+	}
+
+	l.checkLogs(ch)
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 0 {
+		t.Fatalf("expected no repeat alerts while still stale, got %+v", got)
+	}
+
+	touchFile(t, logFile, time.Now())
+	l.checkLogs(ch)
+	got := drainAlerts(ch)
+	if len(got) != 1 || got[0].Severity != notifier.SeverityNominal || got[0].Title != "[DEADMAN] Recovered: Stale Log File" {
+		t.Fatalf("expected one NOMINAL recovery alert, got %+v", got)
+	}
+
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 0 {
+		t.Fatalf("expected no alerts while healthy, got %+v", got)
+	}
+
+	// Going stale again alerts again
+	touchFile(t, logFile, time.Now().Add(-10*time.Minute))
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 1 {
+		t.Fatalf("expected a new stale alert, got %+v", got)
+	}
+}
+
+func TestCheckLogs_MissingThenCreated(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "gone.log")
+	l := New()
+	l.watchedLogs = map[string]time.Duration{logFile: 5 * time.Minute}
+	ch := make(chan notifier.Alert, 10)
+
+	l.checkLogs(ch)
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 1 || got[0].Title != "[DEADMAN] Log File Missing" {
+		t.Fatalf("expected one missing alert, got %+v", got)
+	}
+
+	touchFile(t, logFile, time.Now())
+	l.checkLogs(ch)
+	if got := drainAlerts(ch); len(got) != 1 || got[0].Title != "[DEADMAN] Recovered: Log File Missing" {
+		t.Fatalf("expected one recovery alert, got %+v", got)
+	}
+}

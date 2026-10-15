@@ -25,6 +25,7 @@ type ServiceHealth struct {
 	config        map[string]interface{}
 	services      []string
 	checkInterval time.Duration
+	deadman       skills.Deadman
 }
 
 // New creates a new ServiceHealth skill
@@ -131,7 +132,23 @@ func (s *ServiceHealth) checkServices(alertChan chan<- notifier.Alert) {
 
 		status := strings.TrimSpace(string(output))
 
-		if err != nil || status != "active" {
+		if err == nil && status == "active" {
+			if s.deadman.Pass(service) {
+				alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: Service Stopped",
+				Activity:  fmt.Sprintf("Service %s is active again", service),
+				Location:  "systemd",
+				Time:      now,
+				Equipment: "systemctl",
+			}
+			}
+			continue
+		}
+
+		if s.deadman.Fail(service) {
 			alertChan <- notifier.Alert{
 				Severity:    notifier.SeverityContact,
 				SkillID:     SkillID,

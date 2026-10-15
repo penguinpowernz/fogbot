@@ -24,6 +24,7 @@ type LogFreshness struct {
 	config        map[string]interface{}
 	watchedLogs   map[string]time.Duration // path -> max age before alert
 	checkInterval time.Duration
+	deadman       skills.Deadman
 }
 
 // New creates a new LogFreshness skill
@@ -137,7 +138,7 @@ func (l *LogFreshness) checkLogs(alertChan chan<- notifier.Alert) {
 	for logPath, maxAge := range l.watchedLogs {
 		info, err := os.Stat(logPath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if os.IsNotExist(err) && l.deadman.Fail(logPath+":missing") {
 				alertChan <- notifier.Alert{
 					Severity:    notifier.SeverityContact,
 					SkillID:     SkillID,
@@ -155,8 +156,36 @@ func (l *LogFreshness) checkLogs(alertChan chan<- notifier.Alert) {
 			continue
 		}
 
+		if l.deadman.Pass(logPath + ":missing") {
+			alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: Log File Missing",
+				Activity:  "Log file exists again",
+				Location:  logPath,
+				Time:      now,
+				Equipment: "stat",
+			}
+		}
+
 		age := now.Sub(info.ModTime())
-		if age > maxAge {
+		if age <= maxAge {
+			if l.deadman.Pass(logPath + ":stale") {
+				alertChan <- notifier.Alert{
+				Severity:  notifier.SeverityNominal,
+				SkillID:   SkillID,
+				SkillName: SkillName,
+				Title:     "[DEADMAN] Recovered: Stale Log File",
+				Activity:  "Log is being written again",
+				Location:  logPath,
+				Time:      now,
+				Equipment: "mtime",
+			}
+			}
+			continue
+		}
+		if l.deadman.Fail(logPath + ":stale") {
 			alertChan <- notifier.Alert{
 				Severity:    notifier.SeverityContact,
 				SkillID:     SkillID,
