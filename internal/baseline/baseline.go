@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/penguinpowernz/fogbot/internal/selfwatch"
@@ -233,13 +234,25 @@ func (baseline *Baseline) Changed(current map[string]SuidEntry) []SuidEntry {
 	return changed
 }
 
-// HashFile computes SHA256 hash of a file without loading it all into memory.
+// HashFile computes SHA256 hash of a regular file without loading it all into
+// memory. Anything else is refused: the SUID sweep walks user-writable trees,
+// and opening a FIFO there (which a user can chmod u+s) would block forever and
+// silently stop every later sweep. O_NONBLOCK keeps the open itself from
+// blocking if the path is swapped for a FIFO after it was stat'ed.
 func HashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", path)
+	}
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

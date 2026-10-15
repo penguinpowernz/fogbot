@@ -3,6 +3,7 @@ package baseline
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -438,5 +439,29 @@ func TestChanged_NilBaseline(t *testing.T) {
 	var bl *Baseline
 	if got := bl.Changed(map[string]SuidEntry{"/a": {Path: "/a"}}); got != nil {
 		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+// A user can create a setuid FIFO under /home; hashing it must fail fast
+// rather than block the sweep forever
+func TestHashFile_FIFO_ErrorsWithoutBlocking(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(path, 0o4755); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := HashFile(path)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("HashFile should refuse a FIFO")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HashFile blocked on a FIFO")
 	}
 }
