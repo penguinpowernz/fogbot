@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"strconv"
+	"unicode"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/penguinpowernz/fogbot/internal/baseline"
@@ -111,7 +113,7 @@ func runBaselineApprove(yes bool) error {
 		}
 	}
 
-	if err := mgr.ApproveSuid(approver()); err != nil {
+	if err := mgr.ApproveReviewedSuid(pending, approver()); err != nil {
 		return err
 	}
 	fmt.Printf("SUID/SGID baseline approved (%d binaries).\n", len(pending.Entries))
@@ -140,6 +142,18 @@ func entriesOf(m map[string]baseline.SuidEntry) []baseline.SuidEntry {
 func printEntries(prefix string, entries []baseline.SuidEntry) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	for _, e := range entries {
-		fmt.Printf("%s%-40s %s uid=%d gid=%d sha256=%.12s\n", prefix, e.Path, os.FileMode(e.Mode), e.UID, e.GID, e.Hash)
+		fmt.Printf("%s%-40s %s uid=%d gid=%d sha256=%.12s\n", prefix, displayPath(e.Path), os.FileMode(e.Mode), e.UID, e.GID, e.Hash)
 	}
+}
+
+// displayPath quotes a path that contains anything unprintable. File names are
+// chosen by whoever planted the binary, and raw escape sequences in one could
+// erase or rewrite its line in the operator's terminal before they approve.
+func displayPath(path string) string {
+	for _, r := range path {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(path)
+		}
+	}
+	return path
 }

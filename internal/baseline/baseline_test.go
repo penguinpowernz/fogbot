@@ -465,3 +465,32 @@ func TestHashFile_FIFO_ErrorsWithoutBlocking(t *testing.T) {
 		t.Fatal("HashFile blocked on a FIFO")
 	}
 }
+
+func TestApproveReviewedSuid_RejectsBaselineChangedSinceReview(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+
+	reviewed := &Baseline{Type: "suid", Entries: map[string]SuidEntry{"/bin/su": {Path: "/bin/su", Hash: "aa"}}, CreatedAt: time.Now()}
+	if err := mgr.SavePendingSuid(reviewed); err != nil {
+		t.Fatalf("SavePendingSuid failed: %v", err)
+	}
+
+	// A sweep rewrites the pending baseline while the operator is at the prompt
+	swept := &Baseline{Type: "suid", Entries: map[string]SuidEntry{
+		"/bin/su":       {Path: "/bin/su", Hash: "aa"},
+		"/home/x/shell": {Path: "/home/x/shell", Hash: "bb"},
+	}, CreatedAt: time.Now()}
+	if err := mgr.SavePendingSuid(swept); err != nil {
+		t.Fatalf("SavePendingSuid failed: %v", err)
+	}
+
+	if err := mgr.ApproveReviewedSuid(reviewed, "cli:test"); err == nil {
+		t.Fatal("expected approval of a changed pending baseline to fail")
+	}
+	if active, _ := mgr.LoadSuid(); active != nil {
+		t.Error("no baseline should have been approved")
+	}
+
+	if err := mgr.ApproveReviewedSuid(swept, "cli:test"); err != nil {
+		t.Fatalf("approving the reviewed baseline failed: %v", err)
+	}
+}

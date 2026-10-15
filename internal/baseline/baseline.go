@@ -132,6 +132,18 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 
 // ApproveSuid approves a pending baseline and promotes it to active
 func (m *Manager) ApproveSuid(approvedBy string) error {
+	return m.approveSuid(approvedBy, nil)
+}
+
+// ApproveReviewedSuid approves the pending baseline only if it is still the one
+// the operator reviewed. The daemon rewrites the pending file on every sweep, so
+// without this check a SUID binary planted while the approval prompt is open
+// would be approved unseen.
+func (m *Manager) ApproveReviewedSuid(reviewed *Baseline, approvedBy string) error {
+	return m.approveSuid(approvedBy, reviewed)
+}
+
+func (m *Manager) approveSuid(approvedBy string, reviewed *Baseline) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -147,6 +159,10 @@ func (m *Manager) ApproveSuid(approvedBy string) error {
 	var baseline Baseline
 	if err := json.Unmarshal(data, &baseline); err != nil {
 		return fmt.Errorf("failed to parse pending baseline: %w", err)
+	}
+
+	if reviewed != nil && !sameEntries(reviewed.Entries, baseline.Entries) {
+		return fmt.Errorf("pending baseline changed since it was reviewed; review it again")
 	}
 
 	// Mark as approved
@@ -183,6 +199,20 @@ func (m *Manager) ApproveSuid(approvedBy string) error {
 	_ = os.Remove(pendingPath)
 
 	return nil
+}
+
+// sameEntries reports whether two baselines record the same files
+func sameEntries(a, b map[string]SuidEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, ea := range a {
+		eb, ok := b[path]
+		if !ok || ea.Hash != eb.Hash || ea.Mode != eb.Mode || ea.UID != eb.UID || ea.GID != eb.GID {
+			return false
+		}
+	}
+	return true
 }
 
 // Diff compares current state against baseline and returns new entries
