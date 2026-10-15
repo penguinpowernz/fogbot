@@ -88,8 +88,9 @@ func (s *SystemdWatch) Configure(cfg map[string]interface{}) error {
 func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 	log.Printf("[systemd-watch] Watch() called - connecting to D-Bus")
 
-	// Connect to system bus
-	conn, err := dbus.SystemBus()
+	// Use a private connection: SystemBus() is shared process-wide, and closing
+	// it when the watcher stops would break a later restart on reload
+	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to system bus: %w", err)
 	}
@@ -130,6 +131,13 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 	// Create signal channel
 	signals := make(chan *dbus.Signal, 10)
 	conn.Signal(signals)
+
+	// systemd only emits manager signals once a client has called Subscribe;
+	// the subscription is dropped when this connection closes
+	if call := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1").Call("org.freedesktop.systemd1.Manager.Subscribe", 0); call.Err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("subscribing to systemd signals: %w", call.Err)
+	}
 
 	log.Printf("[systemd-watch] Listening for systemd D-Bus signals")
 
