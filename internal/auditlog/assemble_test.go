@@ -134,3 +134,21 @@ func TestHandleLine_FlushesWithoutEOE(t *testing.T) {
 		t.Fatalf("expected stale event for /etc/shadow, got %+v", got)
 	}
 }
+
+// comm and exe are chosen by the process, so one named `xkey=` must not hide
+// the real rule key from the parser
+func TestHandleLine_KeyInCommDoesNotHideRuleKey(t *testing.T) {
+	tl := newTestTailer("fb-file-500")
+	now := time.Now()
+	events := feed(tl, now,
+		`type=SYSCALL msg=audit(1710547200.123:457): arch=c000003e syscall=257 success=yes exit=3 items=1 ppid=1 pid=2 auid=1000 uid=0 comm="xkey=" exe="/tmp/key=" subj=unconfined key="fb-file-500"`,
+		`type=PATH msg=audit(1710547200.123:457): item=0 name="/etc/shadow" nametype=NORMAL`,
+		`type=EOE msg=audit(1710547200.123:457):`,
+	)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].RuleKey != "fb-file-500" || events[0].Comm != "xkey=" {
+		t.Errorf("unexpected event: key=%q comm=%q", events[0].RuleKey, events[0].Comm)
+	}
+}

@@ -73,8 +73,6 @@ const pendingTimeout = 2 * time.Second
 var (
 	// Regex to extract key=value pairs from audit log lines
 	kvRegex = regexp.MustCompile(`(\w+)=(?:"([^"]*)"|(\S+))`)
-	// Regex to extract the rule key from "key=" field
-	keyRegex = regexp.MustCompile(`key="([^"]+)"`)
 	// Regex to extract the event serial from msg=audit(TIMESTAMP:SERIAL)
 	serialRegex = regexp.MustCompile(`msg=audit\([\d.]+:(\d+)\)`)
 )
@@ -299,6 +297,20 @@ func (p *pendingEvent) finish() *Event {
 	return e
 }
 
+// ruleKey returns the record's key= field. It walks the line field by field
+// rather than searching for `key="`, because comm and exe are attacker
+// controlled: a process named `xkey=` would otherwise shift the match onto a
+// bogus key and the event would be dropped unseen.
+func ruleKey(line string) (string, bool) {
+	key := ""
+	for _, match := range kvRegex.FindAllStringSubmatch(line, -1) {
+		if match[1] == "key" {
+			key = match[2] // only a quoted key is a real rule key
+		}
+	}
+	return key, key != ""
+}
+
 // recordType returns the value of the leading type= field
 func recordType(line string) string {
 	if !strings.HasPrefix(line, "type=") {
@@ -347,12 +359,10 @@ func (t *Tailer) parseLine(line string) *Event {
 	}
 
 	// Extract the rule key first to see if anyone cares about this event
-	keyMatch := keyRegex.FindStringSubmatch(line)
-	if len(keyMatch) < 2 {
+	key, ok := ruleKey(line)
+	if !ok {
 		return nil // No key, not from our rules
 	}
-
-	key := keyMatch[1]
 
 	// Check if anyone is subscribed to this key
 	t.mu.RLock()
@@ -474,13 +484,13 @@ func ParseAuditLog(reader io.Reader) ([]Event, error) {
 		}
 
 		// This is a simplified parser - in production use the full tailer
-		keyMatch := keyRegex.FindStringSubmatch(line)
-		if len(keyMatch) < 2 {
+		key, ok := ruleKey(line)
+		if !ok {
 			continue
 		}
 
 		event := Event{
-			RuleKey:    keyMatch[1],
+			RuleKey:    key,
 			RawMessage: line,
 			Timestamp:  time.Now(),
 			Metadata:   make(map[string]string),
