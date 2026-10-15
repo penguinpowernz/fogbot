@@ -74,18 +74,25 @@ func (l *LogFreshness) Configure(cfg map[string]interface{}) error {
 
 	l.config = cfg
 
-	if logs, ok := cfg["watched_logs"].(map[string]interface{}); ok {
+	// watch_logs:
+	//   - path: /var/log/auth.log
+	//     threshold: 10m
+	if logs, ok := cfg["watch_logs"].([]interface{}); ok {
 		l.watchedLogs = make(map[string]time.Duration)
-		for path, maxAgeStr := range logs {
-			if ageStr, ok := maxAgeStr.(string); ok {
-				if d, err := time.ParseDuration(ageStr); err == nil {
-					l.watchedLogs[path] = d
-				}
+		for _, item := range logs {
+			entry, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			path, _ := entry["path"].(string)
+			threshold, _ := entry["threshold"].(string)
+			if d, err := time.ParseDuration(threshold); err == nil && path != "" {
+				l.watchedLogs[path] = d
 			}
 		}
 	}
 
-	if intervalStr, ok := cfg["check_interval"].(string); ok {
+	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			l.checkInterval = d
 		}

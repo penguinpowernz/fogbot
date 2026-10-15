@@ -18,7 +18,7 @@ func TestConfigure_ParsesSweepInterval(t *testing.T) {
 	s := New(mgr)
 
 	cfg := map[string]interface{}{
-		"suid_sweep_interval": "30m",
+		"sweep_interval": "30m",
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -34,7 +34,7 @@ func TestConfigure_InvalidIntervalIgnored(t *testing.T) {
 	original := s.sweepInterval
 
 	cfg := map[string]interface{}{
-		"suid_sweep_interval": "not-a-duration",
+		"sweep_interval": "not-a-duration",
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)

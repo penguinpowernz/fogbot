@@ -246,11 +246,11 @@ func TestCheckLogs_StaleAlert_ActivityContainsAge(t *testing.T) {
 func TestConfigure_ParsesWatchedLogs(t *testing.T) {
 	l := New()
 	cfg := map[string]interface{}{
-		"watched_logs": map[string]interface{}{
-			"/var/log/syslog":   "15m",
-			"/var/log/auth.log": "1h",
+		"watch_logs": []interface{}{
+			map[string]interface{}{"path": "/var/log/syslog", "threshold": "15m"},
+			map[string]interface{}{"path": "/var/log/auth.log", "threshold": "1h"},
 		},
-		"check_interval": "30s",
+		"poll_interval": "30s",
 	}
 	if err := l.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -273,23 +273,24 @@ func TestConfigure_ParsesWatchedLogs(t *testing.T) {
 func TestConfigure_InvalidDurationIgnored(t *testing.T) {
 	l := New()
 	cfg := map[string]interface{}{
-		"check_interval": "not-a-duration",
+		"poll_interval": "not-a-duration",
 	}
 	original := l.checkInterval
 	if err := l.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
 	}
 	if l.checkInterval != original {
-		t.Error("invalid check_interval string should leave checkInterval unchanged")
+		t.Error("invalid poll_interval string should leave checkInterval unchanged")
 	}
 }
 
 func TestConfigure_InvalidLogDurationSkipped(t *testing.T) {
 	l := New()
 	cfg := map[string]interface{}{
-		"watched_logs": map[string]interface{}{
-			"/var/log/valid.log":   "10m",
-			"/var/log/invalid.log": "not-a-duration",
+		"watch_logs": []interface{}{
+			map[string]interface{}{"path": "/var/log/valid.log", "threshold": "10m"},
+			map[string]interface{}{"path": "/var/log/invalid.log", "threshold": "not-a-duration"},
+			"not-a-map",
 		},
 	}
 	if err := l.Configure(cfg); err != nil {

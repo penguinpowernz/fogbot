@@ -72,7 +72,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 
 	s.config = cfg
 
-	if svcs, ok := cfg["services"].([]interface{}); ok {
+	if svcs, ok := cfg["watch_services"].([]interface{}); ok {
 		s.services = make([]string, 0, len(svcs))
 		for _, svc := range svcs {
 			if svcStr, ok := svc.(string); ok {
@@ -81,7 +81,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 		}
 	}
 
-	if intervalStr, ok := cfg["check_interval"].(string); ok {
+	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			s.checkInterval = d
 		}

@@ -28,8 +28,8 @@ func TestProcessLine_PackageInstall(t *testing.T) {
 	ch := make(chan notifier.Alert, 10)
 
 	// Real dpkg.log install status line format:
-	// "2024-03-15 12:00:00 status installed curl:amd64 7.88.1-10"
-	line := "2024-03-15 12:00:00 status installed curl:amd64 7.88.1-10\n"
+	// "2024-03-15 12:00:00 install curl:amd64 <none> 7.88.1-10"
+	line := "2024-03-15 12:00:00 install curl:amd64 <none> 7.88.1-10\n"
 	p.processLine(line, ch)
 
 	alerts := drainAlerts(ch)
@@ -55,7 +55,7 @@ func TestProcessLine_PackageInstall_FieldsPopulated(t *testing.T) {
 	p := New()
 	ch := make(chan notifier.Alert, 10)
 
-	line := "2024-03-15 12:00:00 status installed nginx:amd64 1.22.1-1\n"
+	line := "2024-03-15 12:00:00 install nginx:amd64 <none> 1.22.1-1\n"
 	p.processLine(line, ch)
 
 	alerts := drainAlerts(ch)
@@ -227,7 +227,7 @@ func TestProcessLine_OneLineOneAlert(t *testing.T) {
 	p := New()
 	ch := make(chan notifier.Alert, 10)
 
-	line := "2024-03-15 12:00:00 status installed openssh-server:amd64 1:9.2p1-2\n"
+	line := "2024-03-15 12:00:00 install openssh-server:amd64 <none> 1:9.2p1-2\n"
 	p.processLine(line, ch)
 
 	alerts := drainAlerts(ch)
@@ -243,7 +243,7 @@ func TestProcessLine_OneLineOneAlert(t *testing.T) {
 func TestConfigure_CustomLogPath(t *testing.T) {
 	p := New()
 	cfg := map[string]interface{}{
-		"dpkg_log_path": "/tmp/test_dpkg.log",
+		"log_path": "/tmp/test_dpkg.log",
 	}
 	if err := p.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -327,5 +327,30 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 	}
 	if !ok {
 		t.Error("CheckSystemState should always return true for pkg-monitor")
+	}
+}
+
+func TestProcessLine_StatusInstalledAloneIsNotAnInstall(t *testing.T) {
+	// dpkg logs "status installed" for upgrades and reconfigures too
+	p := New()
+	ch := make(chan notifier.Alert, 10)
+	p.processLine("2024-03-15 12:00:00 status installed curl:amd64 7.88.1-10\n", ch)
+	if alerts := drainAlerts(ch); len(alerts) != 0 {
+		t.Fatalf("expected no alert, got %+v", alerts)
+	}
+}
+
+func TestProcessLine_AlertFlagsRespected(t *testing.T) {
+	p := New()
+	p.Configure(map[string]interface{}{"alert_on_upgrade": false, "alert_on_remove": false})
+	ch := make(chan notifier.Alert, 10)
+	p.processLine("2024-03-15 12:00:00 upgrade curl:amd64 7.88.1-9 7.88.1-10\n", ch)
+	p.processLine("2024-03-15 12:00:00 remove curl:amd64 7.88.1-10 <none>\n", ch)
+	if alerts := drainAlerts(ch); len(alerts) != 0 {
+		t.Fatalf("expected upgrades and removes to be suppressed, got %+v", alerts)
+	}
+	p.processLine("2024-03-15 12:00:00 install curl:amd64 <none> 7.88.1-10\n", ch)
+	if alerts := drainAlerts(ch); len(alerts) != 1 {
+		t.Fatalf("expected installs to still alert, got %d", len(alerts))
 	}
 }

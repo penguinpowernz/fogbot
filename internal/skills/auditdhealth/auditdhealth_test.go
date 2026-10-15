@@ -126,9 +126,9 @@ func TestCheckHealth_StaleAuditLog_WhenAuditdActive(t *testing.T) {
 func TestConfigure_ParsesFields(t *testing.T) {
 	a := New()
 	cfg := map[string]interface{}{
-		"check_interval": "2m",
-		"audit_log_path": "/tmp/test_audit.log",
-		"max_log_age":    "10m",
+		"poll_interval": "2m",
+		"log_path": "/tmp/test_audit.log",
+		"log_freshness_threshold": "10m",
 	}
 	if err := a.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -150,8 +150,8 @@ func TestConfigure_InvalidDurationsIgnored(t *testing.T) {
 	origMaxAge := a.maxLogAge
 
 	cfg := map[string]interface{}{
-		"check_interval": "bogus",
-		"max_log_age":    "also-bogus",
+		"poll_interval": "bogus",
+		"log_freshness_threshold": "also-bogus",
 	}
 	if err := a.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -238,7 +238,7 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 
 func TestConfig_ReturnsConfigMap(t *testing.T) {
 	a := New()
-	cfg := map[string]interface{}{"max_log_age": "3m"}
+	cfg := map[string]interface{}{"log_freshness_threshold": "3m"}
 	a.Configure(cfg)
 	got := a.Config()
 	if got == nil {

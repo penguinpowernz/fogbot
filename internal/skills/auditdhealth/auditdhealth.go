@@ -75,17 +75,17 @@ func (a *AuditdHealth) Configure(cfg map[string]interface{}) error {
 
 	a.config = cfg
 
-	if intervalStr, ok := cfg["check_interval"].(string); ok {
+	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			a.checkInterval = d
 		}
 	}
 
-	if path, ok := cfg["audit_log_path"].(string); ok {
+	if path, ok := cfg["log_path"].(string); ok {
 		a.auditLogPath = path
 	}
 
-	if maxAgeStr, ok := cfg["max_log_age"].(string); ok {
+	if maxAgeStr, ok := cfg["log_freshness_threshold"].(string); ok {
 		if d, err := time.ParseDuration(maxAgeStr); err == nil {
 			a.maxLogAge = d
 		}

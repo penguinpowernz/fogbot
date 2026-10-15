@@ -76,9 +76,21 @@ func (s *SuidSweep) Configure(cfg map[string]interface{}) error {
 
 	s.config = cfg
 
-	if intervalStr, ok := cfg["suid_sweep_interval"].(string); ok {
+	if intervalStr, ok := cfg["sweep_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			s.sweepInterval = d
+		}
+	}
+
+	if paths, ok := cfg["watch_paths"].([]interface{}); ok {
+		searchPaths := make([]string, 0, len(paths))
+		for _, path := range paths {
+			if p, ok := path.(string); ok {
+				searchPaths = append(searchPaths, p)
+			}
+		}
+		if len(searchPaths) > 0 {
+			s.searchPaths = searchPaths
 		}
 	}
 

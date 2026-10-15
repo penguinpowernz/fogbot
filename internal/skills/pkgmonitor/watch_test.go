@@ -37,7 +37,7 @@ func waitAlert(t *testing.T, ch <-chan notifier.Alert, want string) {
 func startWatch(t *testing.T, logPath string) <-chan notifier.Alert {
 	t.Helper()
 	p := New()
-	p.Configure(map[string]interface{}{"dpkg_log_path": logPath})
+	p.Configure(map[string]interface{}{"log_path": logPath})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ch, err := p.Watch(ctx)
@@ -50,17 +50,17 @@ func startWatch(t *testing.T, logPath string) <-chan notifier.Alert {
 
 func TestWatch_SurvivesRotation(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "dpkg.log")
-	appendLine(t, logPath, "2024-03-15 12:00:00 status installed old:amd64 1.0")
+	appendLine(t, logPath, "2024-03-15 12:00:00 install old:amd64 <none> 1.0")
 	ch := startWatch(t, logPath)
 
-	appendLine(t, logPath, "2024-03-15 12:00:01 status installed before:amd64 1.0")
+	appendLine(t, logPath, "2024-03-15 12:00:01 install before:amd64 <none> 1.0")
 	waitAlert(t, ch, "before")
 
 	// logrotate-style rotation: move the file away, then a new file appears
 	if err := os.Rename(logPath, logPath+".1"); err != nil {
 		t.Fatal(err)
 	}
-	appendLine(t, logPath, "2024-03-15 12:00:02 status installed after:amd64 1.0")
+	appendLine(t, logPath, "2024-03-15 12:00:02 install after:amd64 <none> 1.0")
 	waitAlert(t, ch, "after")
 }
 
@@ -68,6 +68,6 @@ func TestWatch_WaitsForMissingFile(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "dpkg.log")
 	ch := startWatch(t, logPath)
 
-	appendLine(t, logPath, "2024-03-15 12:00:00 status installed late:amd64 1.0")
+	appendLine(t, logPath, "2024-03-15 12:00:00 install late:amd64 <none> 1.0")
 	waitAlert(t, ch, "late")
 }

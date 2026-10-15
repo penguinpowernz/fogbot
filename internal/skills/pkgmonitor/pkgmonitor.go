@@ -22,7 +22,9 @@ const (
 
 var (
 	// dpkg.log patterns
-	installPattern = regexp.MustCompile(`status installed (\S+):(\S+) (\S+)`)
+	// Match dpkg's action lines. "status installed" is also logged for upgrades
+	// and reconfigures, so it can't tell a fresh install apart.
+	installPattern = regexp.MustCompile(` install (\S+):(\S+) <none> (\S+)`)
 	upgradePattern = regexp.MustCompile(`upgrade (\S+):(\S+) (\S+) (\S+)`)
 	removePattern  = regexp.MustCompile(`remove (\S+):(\S+) (\S+)`)
 )
@@ -33,6 +35,10 @@ type PkgMonitor struct {
 	enabled bool
 	config  map[string]interface{}
 	logPath string
+
+	alertOnInstall bool
+	alertOnRemove  bool
+	alertOnUpgrade bool
 }
 
 // New creates a new PkgMonitor skill
@@ -40,6 +46,10 @@ func New() *PkgMonitor {
 	return &PkgMonitor{
 		enabled: false,
 		logPath: "/var/log/dpkg.log",
+
+		alertOnInstall: true,
+		alertOnRemove:  true,
+		alertOnUpgrade: true,
 	}
 }
 
@@ -79,8 +89,17 @@ func (p *PkgMonitor) Configure(cfg map[string]interface{}) error {
 
 	p.config = cfg
 
-	if path, ok := cfg["dpkg_log_path"].(string); ok {
+	if path, ok := cfg["log_path"].(string); ok {
 		p.logPath = path
+	}
+	if v, ok := cfg["alert_on_install"].(bool); ok {
+		p.alertOnInstall = v
+	}
+	if v, ok := cfg["alert_on_remove"].(bool); ok {
+		p.alertOnRemove = v
+	}
+	if v, ok := cfg["alert_on_upgrade"].(bool); ok {
+		p.alertOnUpgrade = v
 	}
 
 	return nil
@@ -136,8 +155,12 @@ func (p *PkgMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Al
 func (p *PkgMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 	now := time.Now()
 
+	p.mu.RLock()
+	alertOnInstall, alertOnRemove, alertOnUpgrade := p.alertOnInstall, p.alertOnRemove, p.alertOnUpgrade
+	p.mu.RUnlock()
+
 	// Check for package install
-	if matches := installPattern.FindStringSubmatch(line); matches != nil {
+	if matches := installPattern.FindStringSubmatch(line); matches != nil && alertOnInstall {
 		pkg := matches[1]
 		arch := matches[2]
 		version := matches[3]
@@ -158,7 +181,7 @@ func (p *PkgMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 	}
 
 	// Check for package upgrade
-	if matches := upgradePattern.FindStringSubmatch(line); matches != nil {
+	if matches := upgradePattern.FindStringSubmatch(line); matches != nil && alertOnUpgrade {
 		pkg := matches[1]
 		arch := matches[2]
 		oldVer := matches[3]
@@ -180,7 +203,7 @@ func (p *PkgMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 	}
 
 	// Check for package removal
-	if matches := removePattern.FindStringSubmatch(line); matches != nil {
+	if matches := removePattern.FindStringSubmatch(line); matches != nil && alertOnRemove {
 		pkg := matches[1]
 		arch := matches[2]
 		version := matches[3]

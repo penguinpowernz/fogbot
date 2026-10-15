@@ -12,7 +12,7 @@ import (
 func TestConfigure_ParsesServices(t *testing.T) {
 	s := New()
 	cfg := map[string]interface{}{
-		"services": []interface{}{"sshd", "nginx", "postgresql"},
+		"watch_services": []interface{}{"sshd", "nginx", "postgresql"},
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -33,7 +33,7 @@ func TestConfigure_ParsesServices(t *testing.T) {
 func TestConfigure_ParsesCheckInterval(t *testing.T) {
 	s := New()
 	cfg := map[string]interface{}{
-		"check_interval": "5m",
+		"poll_interval": "5m",
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -47,7 +47,7 @@ func TestConfigure_InvalidIntervalIgnored(t *testing.T) {
 	s := New()
 	original := s.checkInterval
 	cfg := map[string]interface{}{
-		"check_interval": "not-a-duration",
+		"poll_interval": "not-a-duration",
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -60,7 +60,7 @@ func TestConfigure_InvalidIntervalIgnored(t *testing.T) {
 func TestConfigure_EmptyServices_ReplacesWithEmpty(t *testing.T) {
 	s := New()
 	cfg := map[string]interface{}{
-		"services": []interface{}{},
+		"watch_services": []interface{}{},
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -73,7 +73,7 @@ func TestConfigure_EmptyServices_ReplacesWithEmpty(t *testing.T) {
 func TestConfigure_NonStringServicesSkipped(t *testing.T) {
 	s := New()
 	cfg := map[string]interface{}{
-		"services": []interface{}{"sshd", 42, nil, "auditd"},
+		"watch_services": []interface{}{"sshd", 42, nil, "auditd"},
 	}
 	if err := s.Configure(cfg); err != nil {
 		t.Fatalf("Configure returned error: %v", err)
@@ -179,7 +179,7 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 
 func TestConfig_ReturnsConfigMap(t *testing.T) {
 	s := New()
-	cfg := map[string]interface{}{"check_interval": "2m"}
+	cfg := map[string]interface{}{"poll_interval": "2m"}
 	s.Configure(cfg)
 	got := s.Config()
 	if got == nil {
