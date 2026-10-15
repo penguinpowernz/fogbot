@@ -186,11 +186,7 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Check if already enabled
-	if skills.IsEnabled(skillName, "") {
-		fmt.Printf("Skill %s is already enabled\n", skillName)
-		return
-	}
+	alreadyEnabled := skills.IsEnabled(skillName, "")
 
 	// Load skill config
 	available, err := skills.LoadAvailable("")
@@ -215,14 +211,25 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	// Instantiate the skill implementation
 	skill := instantiateSkill(*skillConfig)
 	if skill == nil {
+		if alreadyEnabled {
+			fmt.Printf("Skill %s is already enabled\n", skillName)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "Skill %s does not have an implementation yet\n", skillName)
 		os.Exit(1)
 	}
 
-	// Use the Enabler to handle the full workflow
+	// Use the Enabler to handle the full workflow. For an enabled skill this
+	// reconciles the system with its current config, e.g. after the port list
+	// changed, which is how the daemon's repair-failed alert says to fix it.
 	if err := skillEnabler.Enable(skill, skillConfig.RequiresApproval); err != nil {
 		fmt.Fprintf(os.Stderr, "Error enabling skill: %v\n", err)
 		os.Exit(1)
+	}
+
+	if alreadyEnabled {
+		fmt.Printf("Skill %s is already enabled; system configuration is up to date\n", skillName)
+		return
 	}
 
 	// Create the symlink after successful enablement
