@@ -259,6 +259,15 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 }
 
 // formatAlert formats an alert as a Telegram message
+// markdownEscaper escapes the characters that start an entity in Telegram's
+// legacy Markdown mode. Alert fields contain paths, usernames and command lines
+// from the system, and an unbalanced _ or * makes Telegram reject the message.
+var markdownEscaper = strings.NewReplacer(`_`, `\_`, `*`, `\*`, "`", "\\`", `[`, `\[`)
+
+func escapeMarkdown(s string) string {
+	return markdownEscaper.Replace(s)
+}
+
 func (t *Telegram) formatAlert(alert notifier.Alert) string {
 	var emoji string
 	var severityText string
@@ -276,31 +285,31 @@ func (t *Telegram) formatAlert(alert notifier.Alert) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s *[%s]* %s\n", emoji, severityText, alert.Title))
+	sb.WriteString(fmt.Sprintf("%s *[%s]* %s\n", emoji, severityText, escapeMarkdown(alert.Title)))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
 
 	if alert.Size != "" {
-		sb.WriteString(fmt.Sprintf("*S:* %s\n", alert.Size))
+		sb.WriteString(fmt.Sprintf("*S:* %s\n", escapeMarkdown(alert.Size)))
 	}
 	if alert.Activity != "" {
-		sb.WriteString(fmt.Sprintf("*A:* %s\n", alert.Activity))
+		sb.WriteString(fmt.Sprintf("*A:* %s\n", escapeMarkdown(alert.Activity)))
 	}
 	if alert.Location != "" {
-		sb.WriteString(fmt.Sprintf("*L:* %s\n", alert.Location))
+		sb.WriteString(fmt.Sprintf("*L:* %s\n", escapeMarkdown(alert.Location)))
 	}
 	if alert.Unit != "" {
-		sb.WriteString(fmt.Sprintf("*U:* %s\n", alert.Unit))
+		sb.WriteString(fmt.Sprintf("*U:* %s\n", escapeMarkdown(alert.Unit)))
 	}
 	sb.WriteString(fmt.Sprintf("*T:* %s\n", alert.Time.UTC().Format("2006-01-02 15:04:05 UTC")))
 	if alert.Equipment != "" {
-		sb.WriteString(fmt.Sprintf("*E:* %s\n", alert.Equipment))
+		sb.WriteString(fmt.Sprintf("*E:* %s\n", escapeMarkdown(alert.Equipment)))
 	}
 
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString(fmt.Sprintf("Host: %s", alert.Host))
+	sb.WriteString(fmt.Sprintf("Host: %s", escapeMarkdown(alert.Host)))
 
 	if alert.SkillID > 0 {
-		sb.WriteString(fmt.Sprintf("  |  skill #%d %s", alert.SkillID, alert.SkillName))
+		sb.WriteString(fmt.Sprintf("  |  skill #%d %s", alert.SkillID, escapeMarkdown(alert.SkillName)))
 	}
 
 	return sb.String()
