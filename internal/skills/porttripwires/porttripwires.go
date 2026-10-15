@@ -206,6 +206,13 @@ func extractPorts(cfg map[string]interface{}, key string) ([]int, error) {
 			default:
 				return nil, fmt.Errorf("unexpected port type: %T", p)
 			}
+			if port := ports[len(ports)-1]; port < 1 || port > 65535 {
+				return nil, fmt.Errorf("port %d out of range 1-65535", port)
+			}
+		}
+		// iptables' multiport match takes at most 15 ports
+		if len(ports) > 15 {
+			return nil, fmt.Errorf("%s lists %d ports, iptables multiport allows at most 15", key, len(ports))
 		}
 		return ports, nil
 	}
