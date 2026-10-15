@@ -6,8 +6,10 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/penguinpowernz/fogbot/internal/auditlog"
@@ -311,10 +313,8 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 
 	// Determine file type from syscall or metadata
 	kind := "file"
-	if event.Metadata["mode"] != "" {
-		// Parse mode to determine if directory
-		// This is simplified - in reality we'd parse the octal mode
-		if strings.Contains(event.Metadata["mode"], "040") {
+	if mode, err := strconv.ParseUint(event.Metadata["mode"], 8, 32); err == nil {
+		if mode&syscall.S_IFMT == syscall.S_IFDIR {
 			kind = "directory"
 		}
 	}
