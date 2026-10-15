@@ -104,3 +104,34 @@ func TestExpectWriteExpires(t *testing.T) {
 		t.Fatal("expected write should expire")
 	}
 }
+
+func TestConfigReplacedByRenameIsContact(t *testing.T) {
+	_, configPath, ch := start(t)
+	replacement := configPath + ".new"
+	os.WriteFile(replacement, []byte("x: 3\n"), 0600)
+	os.Rename(replacement, configPath)
+
+	a := next(t, ch)
+	if a.Severity != notifier.SeverityContact || a.Title != "fogbot File Tamper Detected" {
+		t.Fatalf("expected CONTACT tamper alert, got %+v", a)
+	}
+
+	// The new file at the path is watched too
+	time.Sleep(ownWriteGrace)
+	for len(ch) > 0 {
+		<-ch
+	}
+	os.WriteFile(configPath, []byte("x: 4\n"), 0600)
+	if a := next(t, ch); a.Severity != notifier.SeverityContact {
+		t.Fatalf("expected CONTACT for write to replaced config, got %+v", a)
+	}
+}
+
+func TestConfigChmodIsReported(t *testing.T) {
+	_, configPath, ch := start(t)
+	os.Chmod(configPath, 0666)
+
+	if a := next(t, ch); a.Severity != notifier.SeverityContact {
+		t.Fatalf("expected CONTACT tamper alert, got %+v", a)
+	}
+}

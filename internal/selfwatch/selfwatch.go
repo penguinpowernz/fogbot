@@ -156,6 +156,8 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 				return
 			}
 
+			s.rewatch(event)
+
 			if alert, ok := s.classify(event, hostname); ok {
 				// One write produces several events; report each file once per burst
 				if last, seen := lastAlert[event.Name]; seen && time.Since(last) < ownWriteGrace {
@@ -174,6 +176,25 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 	}
 }
 
+// rewatch re-adds the watch on the binary or config after it is removed or
+// replaced. inotify watches the inode, so once the file at the path is a new
+// one, later changes to it would otherwise go unseen.
+func (s *SelfWatch) rewatch(event fsnotify.Event) {
+	if event.Op&(fsnotify.Remove|fsnotify.Rename|fsnotify.Chmod) == 0 {
+		return
+	}
+	for _, path := range []string{s.binaryPath, s.configPath} {
+		if path == "" || filepath.Clean(event.Name) != filepath.Clean(path) {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			s.mu.Lock()
+			_ = s.watcher.Add(path)
+			s.mu.Unlock()
+		}
+	}
+}
+
 // classify turns an inotify event into an alert, if it warrants one.
 //
 // The binary and config are never written by fogbot, so any change is CONTACT.
@@ -181,12 +202,21 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 // which can't be told apart from an attacker here, so changes not made by the
 // daemon itself are MOVEMENT with a note on which command explains them.
 func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Alert, bool) {
+	// Rename and Chmod matter as much as Write: replacing the binary or config
+	// with `mv` (or install(1)) only shows up as Rename/Chmod on the watched
+	// inode, and a chmod can make the config or state world-writable
 	var verb string
 	switch {
 	case event.Op&fsnotify.Write == fsnotify.Write:
 		verb = "modified"
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
 		verb = "deleted"
+	case event.Op&fsnotify.Rename == fsnotify.Rename:
+		verb = "renamed or replaced"
+	case event.Op&fsnotify.Create == fsnotify.Create:
+		verb = "created"
+	case event.Op&fsnotify.Chmod == fsnotify.Chmod:
+		verb = "attributes changed"
 	default:
 		return notifier.Alert{}, false
 	}
