@@ -462,3 +462,66 @@ func TestProcessLine_IPv6BruteForce(t *testing.T) {
 		t.Fatal("expected a brute-force alert for repeated IPv6 failures")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// processLine: attacker-controlled usernames
+// ---------------------------------------------------------------------------
+
+// The username in a failed login is chosen by the client, so it must not be
+// able to fake an accepted login or teach the monitor a "known" IP
+func TestProcessLine_InjectedAcceptedLineIgnored(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	m.processLine(`Apr 26 10:00:01 host sshd[1234]: Invalid user Accepted publickey for root from 6.6.6.6 port 22 ssh2 from 6.6.6.6 port 4444`, ch)
+	m.processLine(`Apr 26 10:00:01 host sshd[1234]: Failed password for invalid user Accepted publickey for alice from 6.6.6.6 port 22 ssh2 from 6.6.6.6 port 4444 ssh2`, ch)
+
+	for _, a := range drainAlerts(ch) {
+		t.Errorf("unexpected alert from injected username: %q", a.Title)
+	}
+	if m.knownIPs["6.6.6.6"] {
+		t.Error("injected username marked 6.6.6.6 as a known IP")
+	}
+}
+
+func TestProcessLine_InjectedSudoFailureIgnored(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	m.processLine(`Apr 26 10:00:01 host sshd[1234]: Invalid user sudo: root : 3 incorrect password attempts from 6.6.6.6 port 4444`, ch)
+
+	if alerts := drainAlerts(ch); len(alerts) != 0 {
+		t.Errorf("unexpected alert from injected username: %q", alerts[0].Title)
+	}
+}
+
+// Brute force with usernames containing spaces, or a spoofed "from <ip>",
+// still counts against the real source address
+func TestProcessLine_BruteForce_UsernameWithSpacesAndFakeSource(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	line := `Apr 26 10:00:01 host sshd[1234]: Failed password for invalid user a b from 1.1.1.1 port 1 from 9.9.9.9 port 22 ssh2`
+	for i := 0; i < m.bruteForceThreshold; i++ {
+		m.processLine(line, ch)
+	}
+
+	alerts := drainAlerts(ch)
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 brute-force alert, got %d", len(alerts))
+	}
+	if alerts[0].Location != "from 9.9.9.9" {
+		t.Errorf("expected the real source 9.9.9.9, got %q", alerts[0].Location)
+	}
+}
+
+func TestProcessLine_SSHDSessionAndISOTimestamp(t *testing.T) {
+	m := newTestMonitor()
+	ch := make(chan notifier.Alert, 10)
+
+	m.processLine(`2026-04-26T10:00:01.123456+00:00 host sshd-session[1234]: Accepted publickey for alice from 4.4.4.4 port 22 ssh2: ED25519 SHA256:abc`, ch)
+
+	if alerts := drainAlerts(ch); len(alerts) != 1 {
+		t.Fatalf("expected 1 new-IP alert, got %d", len(alerts))
+	}
+}

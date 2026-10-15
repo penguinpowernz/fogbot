@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,17 +37,31 @@ type SSHMonitor struct {
 // ipPattern matches IPv4 and IPv6 addresses (sshd logs IPv6 unbracketed, e.g. 2001:db8::1)
 const ipPattern = `[0-9A-Fa-f:.]+`
 
+// syslogHeader matches the timestamp and hostname that start every auth.log
+// line, in both traditional ("Apr  6 10:00:01 host") and RFC 3339 formats.
+//
+// Every pattern is anchored to it and to the program tag. An unauthenticated
+// client controls the username sshd logs, so an unanchored pattern would let a
+// login attempt as user "Accepted password for root from 1.2.3.4 port 22" fake
+// a root login alert, or mark an IP as known so a later real login from it
+// raises no new-IP alert.
+const syslogHeader = `^(?:[A-Z][a-z]{2} +\d{1,2} \d\d:\d\d:\d\d|\d{4}-\d\d-\d\dT\S+) \S+ `
+
+// sshdTag matches sshd's program tag (sshd-session on OpenSSH 9.8+)
+const sshdTag = `sshd(?:-session)?\[\d+\]: `
+
 var (
 	// SSH login patterns
-	acceptedPattern     = regexp.MustCompile(`Accepted (password|publickey) for (\S+) from (` + ipPattern + `) port (\d+)`)
-	failedPattern       = regexp.MustCompile(`Failed (password|publickey) for (\S+|invalid user \S+) from (` + ipPattern + `)`)
-	invalidUserPattern  = regexp.MustCompile(`Invalid user (\S+) from (` + ipPattern + `)`)
-	rootLoginPattern    = regexp.MustCompile(`Accepted .* for root from (` + ipPattern + `)`)
+	acceptedPattern = regexp.MustCompile(syslogHeader + sshdTag + `Accepted (\S+) for (\S+) from (` + ipPattern + `) port (\d+)`)
+	// The attempted username may contain spaces and even " from <ip> port <n>",
+	// so take the address from the end of the line: the greedy user group leaves
+	// only sshd's own trailing " from <ip> port <n> ssh2[: key info]"
+	failedPattern = regexp.MustCompile(syslogHeader + sshdTag + `Failed (\S+) for (invalid user )?(.*) from (` + ipPattern + `) port \d+(?: ssh2)?(?::.*)?$`)
 
 	// sudo/su patterns
-	sudoPattern         = regexp.MustCompile(`sudo:\s+(\S+) : TTY=(\S+) ; PWD=(\S+) ; USER=(\S+) ; COMMAND=(.+)`)
-	sudoFailedPattern   = regexp.MustCompile(`sudo:\s+(\S+) : (\d+) incorrect password attempt`)
-	suPattern           = regexp.MustCompile(`su\[(\d+)\]: pam_unix\(su:auth\): authentication failure.*logname=(\S+) uid=(\d+) .* ruser=(\S+) rhost=(\S*)  user=(\S+)`)
+	sudoPattern       = regexp.MustCompile(syslogHeader + `sudo(?:\[\d+\])?:\s+(\S+) : TTY=(\S+) ; PWD=(\S+) ; USER=(\S+) ; COMMAND=(.+)`)
+	sudoFailedPattern = regexp.MustCompile(syslogHeader + `sudo(?:\[\d+\])?:\s+(\S+) : (\d+) incorrect password attempt`)
+	suPattern         = regexp.MustCompile(syslogHeader + `su\[(\d+)\]: pam_unix\(su:auth\): authentication failure.*logname=(\S+) uid=(\d+) .* ruser=(\S+) rhost=(\S*)  user=(\S+)`)
 )
 
 // New creates a new SSHMonitor skill
@@ -193,7 +206,7 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 		port := matches[4]
 
 		// Check if this is a root login
-		if rootLoginPattern.MatchString(line) {
+		if user == "root" {
 			alertChan <- notifier.Alert{
 				Severity:  notifier.SeverityContact,
 				SkillID:   SkillID,
@@ -237,7 +250,7 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 
 	// Check for failed logins
 	if matches := failedPattern.FindStringSubmatch(line); matches != nil {
-		ip := matches[3]
+		ip := matches[4]
 
 		s.mu.Lock()
 		s.failuresByIP[ip] = append(s.failuresByIP[ip], now)
@@ -255,12 +268,9 @@ func (s *SSHMonitor) processLine(line string, alertChan chan<- notifier.Alert) {
 
 		// Alert if threshold exceeded
 		if count >= s.bruteForceThreshold {
-			// Extract target user if possible
-			user := "unknown"
-			if matches[2] != "" && !strings.HasPrefix(matches[2], "invalid") {
-				user = matches[2]
-			} else if m := invalidUserPattern.FindStringSubmatch(line); m != nil {
-				user = m[1]
+			user := matches[3]
+			if matches[2] != "" {
+				user += " (invalid)"
 			}
 
 			alertChan <- notifier.Alert{
