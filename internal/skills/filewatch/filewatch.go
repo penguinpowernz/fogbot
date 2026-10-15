@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
@@ -153,9 +154,17 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 		if perms == "" {
 			return nil, fmt.Errorf("no permissions set for path %s", path)
 		}
+		if strings.Trim(perms, "rwxa") != "" {
+			return nil, fmt.Errorf("invalid permissions %q for path %s: use any of r, w, x, a", perms, path)
+		}
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("watch path %q must be absolute", path)
+		}
 
 		commands = append(commands, skills.SystemCommand{
-			Command:     fmt.Sprintf("auditctl -w %s -p %s -k %s", path, perms, ruleKey),
+			// Quote the path: the command is split with shellquote before it
+			// runs, so a space would otherwise turn into extra auditctl arguments
+			Command:     fmt.Sprintf("auditctl -w %s -p %s -k %s", shellquote.Join(path), perms, ruleKey),
 			Description: fmt.Sprintf("Monitor %s for %s", path, expandPerms(perms)),
 			Metadata: map[string]string{
 				"rule_key": ruleKey,

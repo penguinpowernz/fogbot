@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/penguinpowernz/fogbot/internal/auditlog"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
@@ -151,7 +152,12 @@ func (d *DirWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCo
 	// Build auditctl commands for each path
 	// Use -p wa to watch for write and attribute changes (create, rename, chmod, etc.)
 	for _, path := range watchPaths {
-		cmd := fmt.Sprintf("auditctl -w %s -p wa -k %s", path, ruleKey)
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("watch path %q must be absolute", path)
+		}
+		// Quote the path: the command is split with shellquote before it runs,
+		// so a space would otherwise turn into extra auditctl arguments
+		cmd := fmt.Sprintf("auditctl -w %s -p wa -k %s", shellquote.Join(path), ruleKey)
 
 		commands = append(commands, skills.SystemCommand{
 			Command:     cmd,
