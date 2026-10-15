@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"sync"
 
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/baseline"
@@ -230,44 +229,21 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 	log.Printf("Found %d enabled skill configs", len(enabledSkillConfigs))
 
-	// Configure and enable skills based on loaded configs
-	for _, skillCfg := range enabledSkillConfigs {
-		log.Printf("Loading skill #%d (%s) from config file", skillCfg.ID, skillCfg.Name)
-		skill, ok := registry.Get(skillCfg.ID)
-		if !ok {
-			log.Printf("Warning: skill %d (%s) enabled but not in registry", skillCfg.ID, skillCfg.Name)
-			continue
-		}
+	// All watchers feed one bus, so skills can be started and stopped on reload
+	alertBus := make(chan notifier.Alert, 100)
+	go processAlerts(ctx, alertBus, dedupEngine, notif, machineHostname)
 
-		if err := skill.Configure(skillCfg.Config); err != nil {
-			log.Printf("Failed to configure skill %s: %v", skillCfg.Name, err)
-			continue
-		}
-
-		skill.SetEnabled(true)
-		log.Printf("✓ Enabled skill #%d: %s", skillCfg.ID, skillCfg.Name)
-	}
-
-	alertChannels := make([]<-chan notifier.Alert, 0)
+	skillMgr := newSkillManager(ctx, registry, alertBus, machineHostname)
 
 	// Startup repair: restore system config (auditctl rules, iptables rules) that
 	// didn't survive a reboot, using only previously approved commands
 	if err := initSkillSystem(cfg.StateDir); err != nil {
 		log.Printf("Startup repair unavailable: %v", err)
 	} else {
-		alertChannels = append(alertChannels, repairSkills(registry.Enabled(), machineHostname))
+		skillMgr.repair = skillEnabler.ReapplyOnStartup
 	}
 
-	// Start all enabled skills
-	for _, skill := range registry.Enabled() {
-		alertChan, err := skill.Watch(ctx)
-		if err != nil {
-			log.Printf("Failed to start skill %s: %v", skill.Name(), err)
-			continue
-		}
-		alertChannels = append(alertChannels, alertChan)
-		log.Printf("Started watcher for skill #%d: %s", skill.ID(), skill.Name())
-	}
+	log.Printf("Skills: %s", skillMgr.apply(enabledSkillConfigs))
 
 	// Start selfwatch to monitor fogbot's own files
 	binaryPath, _ := os.Executable()
@@ -279,14 +255,9 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Printf("Failed to start selfwatch: %v", err)
 		} else {
-			alertChannels = append(alertChannels, selfwatchChan)
+			go forwardAlerts(ctx, selfwatchChan, alertBus)
 			log.Printf("Started selfwatch monitoring")
 		}
-	}
-
-	// Merge all alert channels and process through dedup engine
-	if notif != nil {
-		go mergeAndSendAlerts(ctx, alertChannels, dedupEngine, notif)
 	}
 
 	// Send startup message
@@ -326,11 +297,28 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		case sig := <-sigChan:
 			switch sig {
 			case syscall.SIGHUP:
-				log.Printf("Received SIGHUP, reloading config...")
+				log.Printf("Received SIGHUP, reloading config and skills...")
 				if err := cfg.Reload(configPathToUse); err != nil {
 					log.Printf("Failed to reload config: %v", err)
 				} else {
 					log.Printf("Config reloaded successfully")
+				}
+
+				configs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
+				if err != nil {
+					log.Printf("Failed to load enabled skills, keeping current watchers: %v", err)
+					break
+				}
+				res := skillMgr.apply(configs)
+				log.Printf("Skills reloaded: %s", res)
+				if res.changed() {
+					skillMgr.send(notifier.Alert{
+						Severity:  notifier.SeverityNominal,
+						Title:     "fogbot skills reloaded",
+						Activity:  res.String(),
+						Time:      time.Now(),
+						Equipment: "reload",
+					})
 				}
 
 			case syscall.SIGINT, syscall.SIGTERM:
@@ -361,33 +349,6 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			return
 		}
 	}
-}
-
-// repairSkills reapplies missing system configuration for enabled skills and
-// returns a channel carrying an alert for each skill that couldn't be repaired,
-// since such a skill is enabled but blind.
-func repairSkills(enabled []skills.Skill, hostname string) <-chan notifier.Alert {
-	failures := make(chan notifier.Alert, len(enabled))
-	defer close(failures)
-
-	for _, skill := range enabled {
-		if err := skillEnabler.ReapplyOnStartup(skill); err != nil {
-			log.Printf("Startup repair failed for skill #%d %s: %v", skill.ID(), skill.Name(), err)
-			failures <- notifier.Alert{
-				Severity:  notifier.SeverityMovement,
-				SkillID:   skill.ID(),
-				SkillName: skill.Name(),
-				Title:     "Startup Repair Failed",
-				Activity:  fmt.Sprintf("System config for %s could not be restored; the skill may not detect anything", skill.Name()),
-				Location:  hostname,
-				Unit:      err.Error(),
-				Time:      time.Now(),
-				Equipment: "startup-repair",
-				Host:      hostname,
-			}
-		}
-	}
-	return failures
 }
 
 func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
@@ -596,69 +557,35 @@ func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Not
 		"  sudo fogbot baseline approve")
 }
 
-// mergeAndSendAlerts merges all skill alert channels and sends them via the notifier
-func mergeAndSendAlerts(ctx context.Context, alertChannels []<-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier) {
-	// Create a merged channel using fan-in pattern
-	merged := make(chan notifier.Alert)
-	var wg sync.WaitGroup
-
-	// Start goroutine for each input channel
-	for _, ch := range alertChannels {
-		wg.Add(1)
-		go func(c <-chan notifier.Alert) {
-			defer wg.Done()
-			for {
-				select {
-				case alert, ok := <-c:
-					if !ok {
-						return // channel closed
-					}
-					select {
-					case merged <- alert:
-					case <-ctx.Done():
-						return
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(ch)
-	}
-
-	// Close merged channel when all inputs are done
-	go func() {
-		wg.Wait()
-		close(merged)
-	}()
-
-	// Process merged alerts
+// processAlerts passes alerts from the bus through dedup and sends them. Without
+// a notifier alerts are only logged, but the bus is still drained so watchers
+// never block.
+func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case alert, ok := <-merged:
-			if !ok {
-				// All channels closed
-				return
+		case alert := <-bus:
+			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
+			if !shouldSend {
+				log.Printf("[alert-suppressed] %s: %s (dedup)", alert.Severity, alert.Title)
+				continue
 			}
 
-			// Pass through dedup engine
-			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
+			if isDigest {
+				alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
+			}
+			if alert.Host == "" {
+				alert.Host = hostname
+			}
+			log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
 
-			if shouldSend {
-				// Modify alert if it's a digest
-				if isDigest {
-					alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
-				}
-
-				log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
-
-				if err := notif.Send(ctx, alert); err != nil {
-					log.Printf("Failed to send alert: %v", err)
-				}
-			} else {
-				log.Printf("[alert-suppressed] %s: %s (dedup)", alert.Severity, alert.Title)
+			if notif == nil {
+				continue
+			}
+			if err := notif.Send(ctx, alert); err != nil {
+				log.Printf("Failed to send alert: %v", err)
 			}
 		}
 	}

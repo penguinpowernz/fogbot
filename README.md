@@ -110,7 +110,7 @@ Configuration via environment variables:
 ✅ Core infrastructure implemented:
 - Project scaffold and package structure
 - Skill system with 20 prebuilt skills (100-900 series)
-- Configuration management with SIGHUP reload
+- SIGHUP reload of config and enabled skills (no restart needed after `fogbot skill enable/disable`)
 - Notifier interface with Telegram implementation
 - TOFU authentication with challenge-response
 - Improved auth flow: `/start` generates code on-demand, scans any message for code
