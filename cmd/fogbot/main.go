@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -137,10 +139,10 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	// Load config
 	cfg, err := config.Load(configPathToUse)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("Config file not found, using defaults")
-			cfg = &config.Config{}
-			cfg.StateDir = stateDirToUse
+		// Load wraps the error, so os.IsNotExist can't see through it
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Printf("Config file %s not found, using defaults", configPathToUse)
+			cfg = config.Default()
 		} else {
 			log.Fatalf("Failed to load config: %v", err)
 		}

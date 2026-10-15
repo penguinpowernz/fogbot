@@ -94,6 +94,14 @@ func Load(path string) (*Config, error) {
 }
 
 // applyDefaults sets default values for unspecified config options
+// Default returns a config with every default applied, for running without a
+// config file (e.g. Docker with only FOGBOT_TELEGRAM_TOKEN set)
+func Default() *Config {
+	cfg := &Config{}
+	cfg.applyDefaults()
+	return cfg
+}
+
 func (c *Config) applyDefaults() {
 	if c.HostLabel == "" {
 		c.HostLabel = DefaultHostLabel

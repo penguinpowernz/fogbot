@@ -30,6 +30,14 @@ type alertState struct {
 
 // NewEngine creates a new deduplication engine
 func NewEngine(window time.Duration, maxBurst int) *Engine {
+	// time.NewTicker panics on a non-positive interval
+	if window <= 0 {
+		window = 5 * time.Minute
+	}
+	if maxBurst <= 0 {
+		maxBurst = 10
+	}
+
 	e := &Engine{
 		window:    window,
 		maxBurst:  maxBurst,
