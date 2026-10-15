@@ -38,7 +38,7 @@ func New(cfg skills.SkillConfig) *FileWatch {
 		requires:        cfg.Requires,
 		tags:            cfg.Tags,
 		config:          cfg.Config,
-		severityDefault: cfg.SeverityDefault,
+		severityDefault: skills.SeverityFromColor(cfg.SeverityDefault),
 		enabled:         false,
 	}
 }
@@ -310,14 +310,11 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 		activity = fmt.Sprintf("%s [uid=%s]", activity, event.UID)
 	}
 
-	// Determine severity based on file and operation
+	// Every watched path is sensitive, so default to CONTACT; a lower configured
+	// default never applies to the auth files themselves
 	severity := f.severityDefault
-	if severity == "" {
+	if severity == "" || strings.HasPrefix(path, "/etc/shadow") || strings.HasPrefix(path, "/etc/sudoers") {
 		severity = notifier.SeverityContact
-		// Critical files get elevated severity
-		if strings.Contains(path, "/etc/shadow") || strings.Contains(path, "/etc/sudoers") {
-			severity = notifier.SeverityMovement
-		}
 	}
 
 	// Build equipment description with process info

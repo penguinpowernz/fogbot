@@ -145,3 +145,17 @@ func (r *Registry) Enabled() []Skill {
 	}
 	return result
 }
+
+// SeverityFromColor maps a skill YAML severity_default (red, yellow, green) to
+// an alert severity. Severity names are accepted as-is; anything else is "".
+func SeverityFromColor(color string) string {
+	switch color {
+	case "red", notifier.SeverityContact:
+		return notifier.SeverityContact
+	case "yellow", notifier.SeverityMovement:
+		return notifier.SeverityMovement
+	case "green", notifier.SeverityNominal:
+		return notifier.SeverityNominal
+	}
+	return ""
+}
