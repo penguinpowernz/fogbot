@@ -268,6 +268,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Printf("Failed to create selfwatch: %v", err)
 	} else {
+		sw.WatchSkillDirs(skills.SkillsAvailablePath, skills.SkillsEnabledPath)
 		selfwatchChan, err := sw.Watch(ctx, machineHostname)
 		if err != nil {
 			log.Printf("Failed to start selfwatch: %v", err)
@@ -353,8 +354,14 @@ func runDaemon(cmd *cobra.Command, args []string) {
 				res := skillMgr.apply(configs)
 				log.Printf("Skills reloaded: %s", res)
 				if res.changed() {
+					// A sensor going off is worth a look even when it was the
+					// operator: it is also how an intruder would blind fogbot
+					severity := notifier.SeverityNominal
+					if len(res.stopped)+len(res.failed) > 0 {
+						severity = notifier.SeverityMovement
+					}
 					skillMgr.send(notifier.Alert{
-						Severity:  notifier.SeverityNominal,
+						Severity:  severity,
 						Title:     "fogbot skills reloaded",
 						Activity:  res.String(),
 						Time:      time.Now(),
