@@ -11,9 +11,16 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/approval"
 	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/penguinpowernz/fogbot/internal/skills"
+	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
+	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
+	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
+	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
+	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
+	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
+	"github.com/penguinpowernz/fogbot/internal/skills/suidsweep"
 	"github.com/penguinpowernz/fogbot/internal/skills/systemdwatch"
 	"github.com/spf13/cobra"
 )
@@ -243,8 +250,23 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 
 // instantiateSkill creates a skill implementation from config
 func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
-	// Match skill by ID to instantiate the right implementation
+	// Match skill by ID to instantiate the right implementation. Skills that
+	// change nothing on the system still need a case, or they can't be enabled.
 	switch cfg.ID {
+	case 100:
+		return sshmonitor.New()
+	case 200:
+		return suidsweep.New(baselineManager())
+	case 210:
+		return procexec.New()
+	case 300:
+		return pkgmonitor.New()
+	case 400:
+		return logfreshness.New()
+	case 410:
+		return servicehealth.New()
+	case 420:
+		return auditdhealth.New()
 	case 500:
 		return filewatch.New(cfg)
 	case 510:
