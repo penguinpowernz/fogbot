@@ -41,7 +41,6 @@ Set in `/etc/fogbot/skills-available/200-suid-sweep.yaml` (shipped from
 ```yaml
 config:
   sweep_interval: 1h
-  baseline_file: /var/lib/fogbot/suid_baseline.json
   watch_paths:
     - /bin
     - /sbin
@@ -55,7 +54,6 @@ config:
 |---|---|---|
 | `sweep_interval` | `1h` | Time between sweeps |
 | `watch_paths` | the six bin/sbin dirs above | Directories walked recursively; symlinks are not followed. If the key is missing, `/usr /bin /sbin /opt /home` |
-| `baseline_file` | | Not used: baselines live in fogbot's state dir (`/var/lib/fogbot`) |
 
 ## Examples
 

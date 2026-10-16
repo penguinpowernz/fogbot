@@ -78,21 +78,6 @@ Only list ports nothing legitimate uses, or every legitimate connection alerts.
 
 ## Examples
 
-**An SSH tripwire on a box that doesn't run sshd.** This is how to watch SSH
-on a workstation you never log in to remotely: leave sshd off (or uninstalled)
-and put a tripwire on 22. Nothing legitimate will ever connect, so any SYN is
-someone on your LAN looking for a way in, and there's no SSH server for them to
-attack:
-
-```yaml
-config:
-  watch_inbound: [22]
-```
-
-If sshd does run because you need it, leave 22 out (every login would alert)
-and use [ssh-monitor](../sshmonitor/README.md) instead. Don't start sshd just
-to have something to watch.
-
 **An RDP tripwire on a box that doesn't run RDP.** Port 3389 is one of the
 most scanned ports there is, and worms and ransomware operators go looking for
 it inside networks. If you don't run an RDP server, nothing should ever connect

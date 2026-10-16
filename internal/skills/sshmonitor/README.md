@@ -60,9 +60,8 @@ config:
 
 ## Examples
 
-**A workstation that never takes inbound SSH.** Don't run `sshd` at all. The
-SSH alerts then have nothing to watch, but failed `sudo`/`su` alerts still
-work. To hear about anyone trying port 22, add `22` to `watch_inbound` in
+**A workstation that never takes inbound SSH.** Don't run `sshd` at all. To
+hear about anyone trying port 22, add `22` to `watch_inbound` in
 [port-tripwires](../porttripwires/README.md) (510).
 
 **Tighter brute force detection.** The default only trips on a fast,

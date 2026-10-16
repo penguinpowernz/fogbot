@@ -16,7 +16,6 @@ tags: [permissions, suid, privilege-escalation]
 severity_default: red
 config:
   sweep_interval: 1h
-  baseline_file: /var/lib/fogbot/suid_baseline.json
   watch_paths:
     - /bin
     - /sbin

@@ -18,10 +18,6 @@ and alerts on a process above `cpu_threshold_pct` for longer than
 `cpu_sustained_seconds`, above `memory_threshold_mb`, or reading/writing faster
 than `io_threshold_mb_per_sec`.
 
-Hidden processes (a PID in `/proc` that `ps` doesn't show) are a rootkit sign,
-not a resource one; that check is planned for
-[proc-exec](../procexec/README.md).
-
 ## Requirements
 
 - `/proc`
