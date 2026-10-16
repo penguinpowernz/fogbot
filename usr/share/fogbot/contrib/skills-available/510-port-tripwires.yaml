@@ -1,8 +1,9 @@
 id: 510
 name: port-tripwires
 description: >
-  Configures iptables LOG rules for ports commonly used by malware and C2
-  frameworks. Monitors both inbound and outbound traffic.
+  Configures iptables and ip6tables LOG rules for ports commonly used by
+  malware and C2 frameworks. Monitors both inbound and outbound traffic,
+  over IPv4 and IPv6.
 why: >
   Outbound connections to unusual ports are often the first observable
   indicator of compromise. Malware phones home, lateral movement tools

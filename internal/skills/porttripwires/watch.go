@@ -42,6 +42,14 @@ type hit struct {
 	uid      string // owner of the local socket, outbound only
 }
 
+// tool names the ruleset that logged the hit
+func (h hit) tool() string {
+	if addr, err := netip.ParseAddr(h.src); err == nil && addr.Is6() && !addr.Is4In6() {
+		return "ip6tables"
+	}
+	return "iptables"
+}
+
 // remote is the address on the other end of the connection
 func (h hit) remote() string {
 	if h.tripwire.direction == "out" {
@@ -256,7 +264,7 @@ func (p *PortTripwires) alertFor(h hit, now time.Time) notifier.Alert {
 		Location:    fmt.Sprintf("port %s/%s", h.dpt, h.proto),
 		Unit:        fmt.Sprintf("src=%s:%s dst=%s:%s", h.src, h.spt, h.dst, h.dpt),
 		Time:        now,
-		Equipment:   fmt.Sprintf("iptables %s (iface %s)", h.tripwire.chain, h.iface),
+		Equipment:   fmt.Sprintf("%s %s (iface %s)", h.tool(), h.tripwire.chain, h.iface),
 		Metadata: map[string]string{
 			"direction": h.tripwire.direction,
 			"proto":     h.proto,

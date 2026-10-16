@@ -184,3 +184,18 @@ func TestReadKmsg_CloseUnblocksRead(t *testing.T) {
 		t.Fatal("reader still blocked after close")
 	}
 }
+
+func TestIPv6HitNamesIp6tables(t *testing.T) {
+	rec := "4,1211,5678911,-;fw-510-in: IN=eth0 OUT= SRC=fe80::9 DST=fe80::1 PROTO=TCP SPT=51234 DPT=445 SYN"
+	h, ok := NewDefault().parseRecord(rec)
+	if !ok {
+		t.Fatal("IPv6 record not parsed")
+	}
+	if got := NewDefault().alertFor(h, time.Now()).Equipment; !strings.HasPrefix(got, "ip6tables ") {
+		t.Fatalf("equipment %q should name ip6tables", got)
+	}
+	h, _ = NewDefault().parseRecord(inboundRec)
+	if got := NewDefault().alertFor(h, time.Now()).Equipment; !strings.HasPrefix(got, "iptables ") {
+		t.Fatalf("equipment %q should name iptables", got)
+	}
+}

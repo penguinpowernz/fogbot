@@ -15,10 +15,11 @@ import (
 type fakeIptables struct {
 	rules  map[string][][]string // "table chain" -> rule args after "-A CHAIN"
 	chains []string              // user-defined filter chains, e.g. ufw's
+	v6     *fakeIptables         // the ip6tables ruleset
 }
 
 func newFake() *fakeIptables {
-	return &fakeIptables{rules: map[string][][]string{}}
+	return &fakeIptables{rules: map[string][][]string{}, v6: &fakeIptables{rules: map[string][][]string{}}}
 }
 
 // withUFW makes the fake look like a host where ufw's rules are loaded
@@ -30,7 +31,18 @@ func (f *fakeIptables) withUFW() *fakeIptables {
 	return f
 }
 
-func (f *fakeIptables) run(args ...string) ([]byte, error) {
+// run answers for iptables from f and for ip6tables from f.v6
+func (f *fakeIptables) run(tool string, args ...string) ([]byte, error) {
+	switch tool {
+	case "iptables":
+		return f.runFamily(args...)
+	case "ip6tables":
+		return f.v6.runFamily(args...)
+	}
+	return nil, fmt.Errorf("unexpected tool %s", tool)
+}
+
+func (f *fakeIptables) runFamily(args ...string) ([]byte, error) {
 	table := "filter"
 	if len(args) >= 2 && args[0] == "-t" {
 		table, args = args[1], args[2:]
@@ -102,11 +114,16 @@ func legacyRule(op, chain, ports, prefix string) string {
 // rule returns the iptables command for a tripwire rule in the given
 // direction's chain (INPUT or OUTPUT), as iptables -S prints it
 func rule(op, chain, ports, prefix string) string {
+	return ruleFor("iptables", op, chain, ports, prefix)
+}
+
+// ruleFor is rule for tool (iptables or ip6tables)
+func ruleFor(tool, op, chain, ports, prefix string) string {
 	match := "PREROUTING ! -i lo -p tcp -m addrtype --dst-type LOCAL"
 	if chain == "OUTPUT" {
 		match = "OUTPUT ! -o lo -p tcp"
 	}
-	cmd := fmt.Sprintf("iptables -t raw %s %s -m multiport --dports %s -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20 -j LOG --log-prefix '%s'", op, match, ports, prefix)
+	cmd := fmt.Sprintf("%s -t raw %s %s -m multiport --dports %s -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20 -j LOG --log-prefix '%s'", tool, op, match, ports, prefix)
 	if chain == "OUTPUT" {
 		cmd += " --log-uid"
 	}
@@ -122,18 +139,20 @@ func (f *fakeIptables) apply(t *testing.T, p *PortTripwires) {
 	}
 	for _, c := range cmds {
 		args, err := shellquote.Split(c.Command)
-		if err != nil || args[0] != "iptables" {
+		if err != nil || (args[0] != "iptables" && args[0] != "ip6tables") {
 			t.Fatalf("bad command %q: %v", c.Command, err)
 		}
-		if _, err := f.run(args[1:]...); err != nil {
+		if _, err := f.run(args[0], args[1:]...); err != nil {
 			t.Fatalf("command %q failed: %v", c.Command, err)
 		}
 	}
 }
 
+// newSkill returns the skill on an IPv4-only host whose rules are in f
 func newSkill(f *fakeIptables, in, out []interface{}) *PortTripwires {
 	p := NewDefault()
 	p.iptables = f.run
+	p.ipv6 = func() bool { return false }
 	cfg := map[string]interface{}{}
 	if in != nil {
 		cfg["watch_inbound"] = in
@@ -338,7 +357,8 @@ func TestUFWNotDetectedWithoutItsChains(t *testing.T) {
 
 func TestQueryFailure(t *testing.T) {
 	p := NewDefault()
-	p.iptables = func(args ...string) ([]byte, error) { return nil, fmt.Errorf("permission denied") }
+	p.iptables = func(string, ...string) ([]byte, error) { return nil, fmt.Errorf("permission denied") }
+	p.ipv6 = func() bool { return false }
 	p.Configure(map[string]interface{}{"watch_inbound": []interface{}{135}})
 
 	if _, err := p.CheckSystemState(); err == nil {
@@ -365,5 +385,62 @@ func TestJoinArgsRoundTrips(t *testing.T) {
 	got, err := shellquote.Split(joinArgs(args))
 	if err != nil || !equalArgs(got, args) {
 		t.Fatalf("round trip: got %q (%v), want %q", got, err, args)
+	}
+}
+
+// The bug: only iptables rules were written, so a connection over IPv6 (a
+// link-local fe80:: address is up on every LAN interface) reached the watched
+// ports without tripping anything
+func TestIPv6HostGetsIp6tablesRules(t *testing.T) {
+	f := newFake()
+	p := newSkill(f, []interface{}{445}, []interface{}{4444})
+	p.ipv6 = func() bool { return true }
+
+	want := []string{
+		rule("-A", "INPUT", "445", "fw-510-in: "),
+		rule("-A", "OUTPUT", "4444", "fw-510-out: "),
+		ruleFor("ip6tables", "-A", "INPUT", "445", "fw-510-in: "),
+		ruleFor("ip6tables", "-A", "OUTPUT", "4444", "fw-510-out: "),
+	}
+	if got := commands(t, p); !equalArgs(got, want) {
+		t.Fatalf("commands:\n got %q\nwant %q", got, want)
+	}
+
+	f.apply(t, p)
+	if !configured(t, p) {
+		t.Fatal("not configured after applying commands")
+	}
+	if len(f.v6.rules["raw PREROUTING"]) != 1 || len(f.v6.rules["raw OUTPUT"]) != 1 {
+		t.Fatalf("expected one ip6tables rule per direction, got %v", f.v6.rules)
+	}
+}
+
+// A host upgraded from an IPv4-only version only needs the ip6tables rules
+// added, and an IPv4 rule that went missing is reported
+func TestMissingIp6tablesRulesAreAdded(t *testing.T) {
+	f := newFake()
+	f.add("INPUT", "445", "fw-510-in: ")
+	f.add("OUTPUT", "4444", "fw-510-out: ")
+	p := newSkill(f, []interface{}{445}, []interface{}{4444})
+	if !configured(t, p) {
+		t.Fatal("IPv4-only host with both rules should be configured")
+	}
+
+	p.ipv6 = func() bool { return true }
+	if configured(t, p) {
+		t.Fatal("missing ip6tables rules reported as configured")
+	}
+	want := []string{
+		ruleFor("ip6tables", "-A", "INPUT", "445", "fw-510-in: "),
+		ruleFor("ip6tables", "-A", "OUTPUT", "4444", "fw-510-out: "),
+	}
+	if got := commands(t, p); !equalArgs(got, want) {
+		t.Fatalf("commands:\n got %q\nwant %q", got, want)
+	}
+	f.apply(t, p)
+
+	f.rules["raw PREROUTING"] = nil
+	if configured(t, p) {
+		t.Fatal("missing iptables rule reported as configured")
 	}
 }
