@@ -43,6 +43,28 @@ type ApprovedCommand struct {
 	Metadata    map[string]string
 }
 
+// SetupCommander is implemented by skills whose DeduceCommands only returns
+// what is missing from the system. SetupCommands returns every command that
+// sets the skill up from nothing, which is what startup repair needs approved.
+type SetupCommander interface {
+	SetupCommands(cfg map[string]interface{}) ([]SystemCommand, error)
+}
+
+// Teardowner is implemented by skills that change the system. TeardownCommands
+// returns the commands that remove what the skill put in place, as found on
+// the system now.
+type Teardowner interface {
+	TeardownCommands() ([]SystemCommand, error)
+}
+
+// setupCommands returns every command that sets skill up from nothing
+func setupCommands(skill Skill) ([]SystemCommand, error) {
+	if s, ok := skill.(SetupCommander); ok {
+		return s.SetupCommands(skill.Config())
+	}
+	return skill.DeduceCommands(skill.Config())
+}
+
 // NewEnabler creates a new skill enabler
 func NewEnabler(tracker ApprovalTracker) *Enabler {
 	return &Enabler{
@@ -67,6 +89,12 @@ func (e *Enabler) Enable(skill Skill) error {
 
 	if isConfigured {
 		fmt.Printf("✓ Skill '%s' configuration already exists in system\n", skill.Name())
+		// Startup repair only runs approved commands. Rules left by an earlier
+		// install, or added by hand, were never approved, so without this they
+		// could not be restored after a reboot or an auditd restart.
+		if err := e.approveExisting(skill); err != nil {
+			return fmt.Errorf("approval denied or failed: %w", err)
+		}
 		skill.SetEnabled(true)
 		return nil
 	}
@@ -93,7 +121,7 @@ func (e *Enabler) Enable(skill Skill) error {
 
 	// Step 4: Request approval if needed
 	if len(needsApproval) > 0 {
-		if err := e.requestApproval(skill, needsApproval); err != nil {
+		if err := e.requestApproval(skill, needsApproval, false); err != nil {
 			return fmt.Errorf("approval denied or failed: %w", err)
 		}
 	}
@@ -136,8 +164,29 @@ const (
 	colorBold   = "\033[1m"
 )
 
-// requestApproval presents commands to user and requests approval
-func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
+// approveExisting asks for approval of the commands that set skill up, when
+// its configuration is already on the system but not all of them are approved
+func (e *Enabler) approveExisting(skill Skill) error {
+	commands, err := setupCommands(skill)
+	if err != nil {
+		return fmt.Errorf("failed to deduce commands: %w", err)
+	}
+	var needsApproval []SystemCommand
+	for _, cmd := range commands {
+		if !e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
+			needsApproval = append(needsApproval, cmd)
+		}
+	}
+	if len(needsApproval) == 0 {
+		return nil
+	}
+	return e.requestApproval(skill, needsApproval, true)
+}
+
+// requestApproval presents commands to user and requests approval. With
+// inPlace the configuration already exists, so the commands are only approved
+// for startup repair, not run now.
+func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand, inPlace bool) error {
 	fmt.Printf("\n%s%s┌─────────────────────────────────────────────────────────────────┐%s\n", colorBold, colorYellow, colorReset)
 	fmt.Printf("%s%s│ ⚠  Skill '%s' requires system configuration%s\n", colorBold, colorYellow, skill.Name(), colorReset)
 	fmt.Printf("%s%s└─────────────────────────────────────────────────────────────────┘%s\n\n", colorBold, colorYellow, colorReset)
@@ -145,17 +194,44 @@ func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
 	fmt.Printf("%s%sWhy this skill matters:%s\n", colorBold, colorCyan, colorReset)
 	fmt.Printf("%s%s%s\n\n", colorCyan, skill.Why(), colorReset)
 
-	fmt.Printf("%s%sThe following commands will be executed:%s\n\n", colorBold, colorBlue, colorReset)
-	for i, cmd := range commands {
-		fmt.Printf("  %s%d. %s%s\n", colorBold, i+1, cmd.Description, colorReset)
-		fmt.Printf("     %s%s%s\n\n", colorRed, cmd.Command, colorReset)
+	if inPlace {
+		fmt.Printf("%s%sThis configuration is already in place. These commands are not run now;%s\n", colorBold, colorBlue, colorReset)
+		fmt.Printf("%s%sapproving them lets fogbot restore it if it goes missing:%s\n\n", colorBold, colorBlue, colorReset)
+	} else {
+		fmt.Printf("%s%sThe following commands will be executed:%s\n\n", colorBold, colorBlue, colorReset)
 	}
+	printCommands(commands)
 
 	fmt.Printf("%s%sNOTE:%s Fogbot will check system configuration on each startup.\n", colorBold, colorYellow, colorReset)
 	fmt.Printf("      If these configurations are missing, approved commands will\n")
 	fmt.Printf("      be automatically re-applied while this skill is enabled.\n\n")
 
-	fmt.Printf("%sDo you approve these commands? [y/N]: %s", colorBold, colorReset)
+	if err := confirm("Do you approve these commands?"); err != nil {
+		return err
+	}
+
+	// Record approval
+	for _, cmd := range commands {
+		if err := e.approvalTracker.Approve(skill.ID(), skill.Name(), cmd); err != nil {
+			return fmt.Errorf("failed to record approval: %w", err)
+		}
+	}
+
+	fmt.Printf("\n✓ Approval recorded\n")
+	return nil
+}
+
+func printCommands(commands []SystemCommand) {
+	for i, cmd := range commands {
+		fmt.Printf("  %s%d. %s%s\n", colorBold, i+1, cmd.Description, colorReset)
+		fmt.Printf("     %s%s%s\n\n", colorRed, cmd.Command, colorReset)
+	}
+}
+
+// confirm asks a yes/no question on stdin, returning an error unless the
+// answer is yes
+func confirm(question string) error {
+	fmt.Printf("%s%s [y/N]: %s", colorBold, question, colorReset)
 
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
@@ -167,15 +243,41 @@ func (e *Enabler) requestApproval(skill Skill, commands []SystemCommand) error {
 	if response != "y" && response != "yes" {
 		return fmt.Errorf("user denied approval")
 	}
+	return nil
+}
 
-	// Record approval
-	for _, cmd := range commands {
-		if err := e.approvalTracker.Approve(skill.ID(), skill.Name(), cmd); err != nil {
-			return fmt.Errorf("failed to record approval: %w", err)
+// Disable removes the system configuration skill put in place, once the user
+// approves the commands that do it, then revokes the skill's approvals. Before,
+// disabling only revoked approvals: the rules stayed, so a later enable found
+// them in place, recorded no approval, and startup repair could never restore
+// them. The removal commands are not recorded, as nothing repeats them.
+func (e *Enabler) Disable(skill Skill) error {
+	if t, ok := skill.(Teardowner); ok {
+		commands, err := t.TeardownCommands()
+		switch {
+		case err != nil && e.dryRun:
+			// Dry-run usually runs unprivileged, where the rules can't be read
+			fmt.Printf("  [dry-run] Could not list system configuration to remove (%v)\n", err)
+		case err != nil:
+			return fmt.Errorf("failed to work out what to remove: %w", err)
+		case len(commands) > 0:
+			fmt.Printf("\n%s%sDisabling '%s' removes its system configuration:%s\n\n", colorBold, colorYellow, skill.Name(), colorReset)
+			printCommands(commands)
+			if err := confirm("Run these commands?"); err != nil {
+				return err
+			}
+			fmt.Printf("\nRemoving configuration for skill '%s'...\n", skill.Name())
+			for _, cmd := range commands {
+				if err := e.executeCommand(cmd); err != nil {
+					return fmt.Errorf("failed to execute command: %w", err)
+				}
+			}
 		}
 	}
 
-	fmt.Printf("\n✓ Approval recorded\n")
+	if err := e.approvalTracker.RevokeSkill(skill.ID()); err != nil {
+		return fmt.Errorf("failed to revoke approvals: %w", err)
+	}
 	return nil
 }
 

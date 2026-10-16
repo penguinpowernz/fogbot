@@ -147,4 +147,5 @@ tool or move the canary.
 
 ```bash
 sudo fogbot skill enable file-watch   # shows the auditctl rules for approval
+sudo fogbot skill disable file-watch  # removes them again, after confirmation
 ```

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,15 +197,17 @@ func parentExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// TeardownCommands returns the commands deleting this skill's audit rules
+func (f *FileWatch) TeardownCommands() ([]skills.SystemCommand, error) {
+	return skills.AuditRemoveCommands(f.generateRuleKey())
+}
+
 // CheckSystemState verifies if auditd rules are already configured
 func (f *FileWatch) CheckSystemState() (bool, error) {
-	cmd := exec.Command("auditctl", "-l")
-	output, err := cmd.CombinedOutput()
+	rulesOutput, err := skills.ListAuditRules()
 	if err != nil {
-		return false, fmt.Errorf("failed to check auditd rules: %w (output: %s)", err, string(output))
+		return false, err
 	}
-
-	rulesOutput := string(output)
 	ruleKey := f.generateRuleKey()
 
 	watchPaths, err := extractPathPermsMap(f.config, "watch_paths")

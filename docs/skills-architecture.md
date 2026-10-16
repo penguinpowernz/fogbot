@@ -101,7 +101,11 @@ When user runs `fogbot skill enable 510`:
 
 1. Load skill config from `skills-available/510-port-tripwires.yaml`
 2. Instantiate skill implementation
-3. Check `CheckSystemState()` - if already configured, skip approval
+3. Check `CheckSystemState()` - if already configured, nothing is run, but any
+   of the commands that would set it up from scratch (`SetupCommands()` if the
+   skill has it, else `DeduceCommands()`) that aren't approved yet are shown for
+   approval. Without that, rules left by an earlier install or added by hand
+   could never be restored by startup repair.
 4. If not configured:
    - Call `DeduceCommands()` to generate commands
    - Show colored approval prompt with:
@@ -118,11 +122,18 @@ When user runs `fogbot skill enable 510`:
 
 When user runs `fogbot skill disable 510`:
 
-1. Remove symlink from `skills-enabled/`
+1. If the skill implements `TeardownCommands()`, show the commands that remove
+   what it put on the system (e.g. `iptables -D ...`, `auditctl -W ...`), ask
+   for confirmation and run them. These aren't recorded: nothing repeats them.
+   Declining leaves the skill enabled.
 2. **Revoke all approvals** for that skill from approved-commands.json
-3. Next enable will require fresh approval
+3. Remove symlink from `skills-enabled/`
+4. Next enable will require fresh approval
 
-This ensures users must re-approve commands if they re-enable a skill.
+This ensures users must re-approve commands if they re-enable a skill. Before
+the daemon is reloaded, its periodic state check sees the skill's config gone;
+it re-reads approved-commands.json before any repair and skips skills no
+longer in `skills-enabled/`, so the removed rules aren't put back.
 
 ## Changing an Enabled Skill's Config
 

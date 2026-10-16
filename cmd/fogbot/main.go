@@ -256,7 +256,20 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	if err := initSkillSystem(cfg.StateDir); err != nil {
 		log.Printf("Startup repair unavailable: %v", err)
 	} else {
-		skillMgr.repair = skillEnabler.ReapplyOnStartup
+		skillMgr.repair = func(skill skills.Skill) error {
+			// Only what is approved now may run: `fogbot skill disable`
+			// removes a skill's config and revokes its approvals, which must
+			// not be put back before the daemon is reloaded
+			if err := approvalTracker.Reload(); err != nil {
+				return fmt.Errorf("reloading approved commands: %w", err)
+			}
+			return skillEnabler.ReapplyOnStartup(skill)
+		}
+		// A skill disabled on the host but still running until the next
+		// reload has had its config removed on purpose
+		skillMgr.enabledOnDisk = func(skill skills.Skill) bool {
+			return skills.IsEnabled(skill.Name(), "")
+		}
 	}
 
 	log.Printf("Skills: %s", skillMgr.apply(enabledSkillConfigs))

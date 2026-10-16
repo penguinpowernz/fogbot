@@ -39,6 +39,10 @@ type skillManager struct {
 	// repair restores missing system config before a skill starts; nil disables it
 	repair func(skills.Skill) error
 
+	// enabledOnDisk reports whether a skill is still enabled in skills-enabled;
+	// nil means always
+	enabledOnDisk func(skills.Skill) bool
+
 	mu      sync.Mutex
 	running map[int]*runningSkill
 
@@ -291,13 +295,19 @@ func (m *skillManager) checkSystemState() {
 	sort.Ints(ids)
 
 	for _, id := range ids {
-		if m.running[id].exited() {
+		if r := m.running[id]; r.exited() || r.stopping.Load() {
 			continue
 		}
 		skill, _ := m.registry.Get(id)
 		key := strconv.Itoa(id)
 
 		configured, err := skill.CheckSystemState()
+		if err == nil && !configured && m.enabledOnDisk != nil && !m.enabledOnDisk(skill) {
+			// `fogbot skill disable` removed it; the reload that stops the
+			// watcher hasn't happened yet
+			log.Printf("[state-check] Skill #%d %s was disabled on the host; reload fogbot to stop it", id, skill.Name())
+			continue
+		}
 		if err != nil {
 			log.Printf("[state-check] Could not check system config for skill #%d %s: %v", id, skill.Name(), err)
 			continue

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -179,16 +179,17 @@ func (d *DirWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCo
 	return commands, nil
 }
 
+// TeardownCommands returns the commands deleting this skill's audit rules
+func (d *DirWatch) TeardownCommands() ([]skills.SystemCommand, error) {
+	return skills.AuditRemoveCommands(d.generateRuleKey())
+}
+
 // CheckSystemState verifies if auditd rules are already configured
 func (d *DirWatch) CheckSystemState() (bool, error) {
-	// Get current audit rules
-	cmd := exec.Command("auditctl", "-l")
-	output, err := cmd.CombinedOutput()
+	rulesOutput, err := skills.ListAuditRules()
 	if err != nil {
-		return false, fmt.Errorf("failed to check auditd rules: %w (output: %s)", err, string(output))
+		return false, err
 	}
-
-	rulesOutput := string(output)
 
 	// Generate the rule key we expect to find
 	ruleKey := d.generateRuleKey()

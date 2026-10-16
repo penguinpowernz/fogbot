@@ -224,6 +224,43 @@ func (p *PortTripwires) DeduceCommands(cfg map[string]interface{}) ([]skills.Sys
 	return commands, err
 }
 
+// SetupCommands returns the commands adding every tripwire rule from nothing,
+// which is what startup repair runs after a reboot clears the rules
+func (p *PortTripwires) SetupCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
+	return p.plan(cfg, false)
+}
+
+// TeardownCommands returns the commands deleting every tripwire rule this
+// skill added, wherever it is and whatever ports it lists
+func (p *PortTripwires) TeardownCommands() ([]skills.SystemCommand, error) {
+	var commands []skills.SystemCommand
+	for _, tool := range p.families() {
+		for _, tw := range tripwires {
+			ruleID := p.generateRuleID(tw.direction)
+			label := tw.label
+			chains := []chainRef{tw.chain}
+			// Earlier versions only ever wrote IPv4 rules
+			if tool == "iptables" {
+				chains = append(chains, tw.legacy)
+			}
+			if tool == "ip6tables" {
+				label += " IPv6"
+			}
+			for _, chain := range chains {
+				rules, err := p.tripwireRules(tool, chain, ruleID)
+				if err != nil {
+					return nil, queryError{err}
+				}
+				for _, rule := range rules {
+					commands = append(commands, p.removeCommand(tool, tw, chain, rule,
+						fmt.Sprintf("Remove %s tripwire rule from %s (ports: %s)", label, chain, argAfter(rule, "--dports"))))
+				}
+			}
+		}
+	}
+	return commands, nil
+}
+
 // CheckSystemState reports whether each chain holds exactly the tripwire rule
 // the config calls for. Checking only for the rule ID would miss a changed port
 // list, so the new ports would never be applied.

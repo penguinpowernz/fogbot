@@ -138,3 +138,130 @@ func TestEnable_DeclinedApprovalRunsNothing(t *testing.T) {
 		t.Fatal("a command ran without approval")
 	}
 }
+
+// recordingTracker keeps approvals in memory
+type recordingTracker struct {
+	ApprovalTracker
+	approved map[string]bool
+	revoked  bool
+}
+
+func (r *recordingTracker) IsApproved(_ int, cmd string) bool { return r.approved[cmd] }
+func (r *recordingTracker) Approve(_ int, _ string, cmd CommandInfo) error {
+	r.approved[cmd.GetCommand()] = true
+	return nil
+}
+func (r *recordingTracker) RevokeSkill(int) error {
+	r.approved = map[string]bool{}
+	r.revoked = true
+	return nil
+}
+
+// Rules left behind by an earlier install (or added by hand) were never
+// approved, so startup repair couldn't restore them after a reboot
+func TestEnable_AlreadyConfiguredRecordsApprovalWithoutRunning(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	cmds := appendCmds(out, "x", "y")
+	tracker := &recordingTracker{approved: map[string]bool{}}
+	withStdin(t, "y\n")
+
+	if err := NewEnabler(tracker).Enable(&promptSkill{fakeSkill{cmds: cmds, ok: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if readRan(t, out) != "" {
+		t.Fatal("commands ran although the configuration was already in place")
+	}
+	for _, c := range cmds {
+		if !tracker.approved[c.Command] {
+			t.Fatalf("%q not approved, so startup repair couldn't restore it", c.Command)
+		}
+	}
+}
+
+func TestEnable_AlreadyConfiguredAndApprovedDoesNotPrompt(t *testing.T) {
+	cmds := appendCmds(filepath.Join(t.TempDir(), "ran"), "x")
+	tracker := &recordingTracker{approved: map[string]bool{cmds[0].Command: true}}
+	withStdin(t, "") // a prompt would fail reading stdin
+
+	if err := NewEnabler(tracker).Enable(&promptSkill{fakeSkill{cmds: cmds, ok: true}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setupSkill only deduces what is missing, like port-tripwires
+type setupSkill struct {
+	promptSkill
+	setup []SystemCommand
+}
+
+func (s *setupSkill) SetupCommands(map[string]interface{}) ([]SystemCommand, error) {
+	return s.setup, nil
+}
+
+func TestEnable_AlreadyConfiguredApprovesSetupCommands(t *testing.T) {
+	setup := appendCmds(filepath.Join(t.TempDir(), "ran"), "add")
+	tracker := &recordingTracker{approved: map[string]bool{}}
+	withStdin(t, "y\n")
+
+	skill := &setupSkill{promptSkill: promptSkill{fakeSkill{ok: true}}, setup: setup}
+	if err := NewEnabler(tracker).Enable(skill); err != nil {
+		t.Fatal(err)
+	}
+	if !tracker.approved[setup[0].Command] {
+		t.Fatal("setup command not approved")
+	}
+}
+
+// teardownSkill removes what it put in place
+type teardownSkill struct {
+	promptSkill
+	teardown []SystemCommand
+}
+
+func (s *teardownSkill) TeardownCommands() ([]SystemCommand, error) { return s.teardown, nil }
+
+func TestDisable_RemovesConfigThenRevokes(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	tracker := &recordingTracker{approved: map[string]bool{"add": true}}
+	withStdin(t, "y\n")
+
+	skill := &teardownSkill{teardown: appendCmds(out, "remove")}
+	if err := NewEnabler(tracker).Disable(skill); err != nil {
+		t.Fatal(err)
+	}
+	if readRan(t, out) != "remove" {
+		t.Fatalf("teardown didn't run, ran %q", readRan(t, out))
+	}
+	if !tracker.revoked {
+		t.Fatal("approvals not revoked")
+	}
+	if tracker.approved["remove"] {
+		t.Fatal("teardown commands must not be recorded for startup repair")
+	}
+}
+
+func TestDisable_DeclinedLeavesEverything(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	tracker := &recordingTracker{approved: map[string]bool{"add": true}}
+	withStdin(t, "n\n")
+
+	skill := &teardownSkill{teardown: appendCmds(out, "remove")}
+	if err := NewEnabler(tracker).Disable(skill); err == nil {
+		t.Fatal("expected an error when teardown is declined")
+	}
+	if readRan(t, out) != "" || tracker.revoked {
+		t.Fatal("declined disable changed something")
+	}
+}
+
+func TestDisable_NothingToRemoveDoesNotPrompt(t *testing.T) {
+	tracker := &recordingTracker{approved: map[string]bool{}}
+	withStdin(t, "")
+
+	if err := NewEnabler(tracker).Disable(&teardownSkill{}); err != nil {
+		t.Fatal(err)
+	}
+	if !tracker.revoked {
+		t.Fatal("approvals not revoked")
+	}
+}

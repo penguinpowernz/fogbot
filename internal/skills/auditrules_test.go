@@ -33,3 +33,22 @@ func TestAuditWatchListed(t *testing.T) {
 		t.Error("listed path with a trailing slash didn't match")
 	}
 }
+
+func TestAuditWatchesWithKey(t *testing.T) {
+	rules := `-w /etc/passwd -p rwa -k fb-file-500
+-w /etc/cron.d -p wa -k fb-dir-540
+-w /root/my dir -p wa -k fb-dir-540
+-w /etc/shadow -p rwa -k fb-file-5000
+-a always,exit -F arch=b64 -S execve -k fb-dir-540`
+
+	got := AuditWatchesWithKey(rules, "fb-dir-540")
+	want := []AuditWatch{{"/etc/cron.d", "wa"}, {"/root/my dir", "wa"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

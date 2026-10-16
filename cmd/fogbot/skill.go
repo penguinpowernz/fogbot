@@ -248,6 +248,16 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	fmt.Printf("\nReload fogbot daemon to activate: systemctl reload fogbot (or kill -HUP)\n")
 }
 
+// disableSkill removes the system configuration a skill put in place, after
+// the user approves it, and revokes the skill's approvals
+func disableSkill(cfg skills.SkillConfig) error {
+	skill := instantiateSkill(cfg)
+	if skill == nil {
+		return approvalTracker.RevokeSkill(cfg.ID)
+	}
+	return skillEnabler.Disable(skill)
+}
+
 // instantiateSkill creates a skill implementation from config
 func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 	// Match skill by ID to instantiate the right implementation. Skills that
@@ -310,18 +320,13 @@ func runSkillDisable(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	var skillID int
-	for _, skill := range available {
-		if skill.Name == skillName {
-			skillID = skill.ID
+	for _, skillCfg := range available {
+		if skillCfg.Name == skillName {
+			if err := disableSkill(skillCfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Error disabling skill: %v\n", err)
+				os.Exit(1)
+			}
 			break
-		}
-	}
-
-	// Revoke all approvals for this skill
-	if skillID > 0 {
-		if err := approvalTracker.RevokeSkill(skillID); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to revoke approvals: %v\n", err)
 		}
 	}
 
@@ -332,7 +337,7 @@ func runSkillDisable(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Printf("Skill %s disabled successfully\n", skillName)
-	fmt.Printf("Approvals revoked for this skill\n")
+	fmt.Printf("System configuration removed and approvals revoked for this skill\n")
 	fmt.Printf("Reload fogbot daemon to deactivate: systemctl reload fogbot (or kill -HUP)\n")
 }
 
@@ -550,9 +555,9 @@ func runSkillInteractive(cmd *cobra.Command, args []string) {
 
 	// Disable skills
 	for _, skill := range toDisable {
-		// Revoke approvals when disabling
-		if err := approvalTracker.RevokeSkill(skill.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ Warning: failed to revoke approvals for %s: %v\n", skill.Name, err)
+		if err := disableSkill(skill); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ Failed to disable %s: %v\n", skill.Name, err)
+			continue
 		}
 
 		if err := skills.Disable(skill.Name, ""); err != nil {

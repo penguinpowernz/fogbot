@@ -128,4 +128,5 @@ config:
 
 ```bash
 sudo fogbot skill enable port-tripwires   # shows the iptables rules for approval
+sudo fogbot skill disable port-tripwires  # removes them again, after confirmation
 ```

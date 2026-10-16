@@ -97,4 +97,5 @@ config:
 
 ```bash
 sudo fogbot skill enable dir-watch   # shows the auditctl rules for approval
+sudo fogbot skill disable dir-watch  # removes them again, after confirmation
 ```

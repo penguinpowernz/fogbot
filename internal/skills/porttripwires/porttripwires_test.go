@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/kballard/go-shellquote"
+
+	"github.com/penguinpowernz/fogbot/internal/skills"
 )
 
 // fakeIptables keeps a ruleset in memory and answers -S, -C, -A and -D like
@@ -442,5 +444,81 @@ func TestMissingIp6tablesRulesAreAdded(t *testing.T) {
 	f.rules["raw PREROUTING"] = nil
 	if configured(t, p) {
 		t.Fatal("missing iptables rule reported as configured")
+	}
+}
+
+// runAll runs commands against f the way the enabler does
+func (f *fakeIptables) runAll(t *testing.T, cmds []skills.SystemCommand) {
+	t.Helper()
+	for _, c := range cmds {
+		args, err := shellquote.Split(c.Command)
+		if err != nil {
+			t.Fatalf("bad command %q: %v", c.Command, err)
+		}
+		if _, err := f.run(args[0], args[1:]...); err != nil {
+			t.Fatalf("command %q failed: %v", c.Command, err)
+		}
+	}
+}
+
+// Disabling the skill must remove its rules: left in place, a later enable
+// found them, recorded no approval, and startup repair couldn't restore them
+func TestTeardownRemovesEveryTripwireRule(t *testing.T) {
+	f := newFake()
+	p := newSkill(f, []interface{}{445}, []interface{}{4444})
+	p.ipv6 = func() bool { return true }
+	f.apply(t, p)
+	// A rule from an older port list and one where old versions put it
+	f.add("INPUT", "139", "fw-510-in: ")
+	f.addLegacy("INPUT", "135", "fw-510-in: ")
+	f.rules["raw PREROUTING"] = append(f.rules["raw PREROUTING"], []string{"-j", "ACCEPT"}) // not ours
+
+	cmds, err := p.TeardownCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.runAll(t, cmds)
+
+	for _, ruleset := range []*fakeIptables{f, f.v6} {
+		for chain, rules := range ruleset.rules {
+			for _, r := range rules {
+				if argAfter(r, "--log-prefix") != "" {
+					t.Fatalf("tripwire rule left in %s: %v", chain, r)
+				}
+			}
+		}
+	}
+	if len(f.rules["raw PREROUTING"]) != 1 {
+		t.Fatalf("other rules must be left alone, got %v", f.rules["raw PREROUTING"])
+	}
+}
+
+// Startup repair after a reboot needs the add commands approved, which
+// DeduceCommands doesn't return while the rules are in place
+func TestSetupCommandsListAddsWhenConfigured(t *testing.T) {
+	f := newFake()
+	p := newSkill(f, []interface{}{445}, []interface{}{4444})
+	f.apply(t, p)
+
+	setup, err := p.SetupCommands(p.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		rule("-A", "INPUT", "445", "fw-510-in: "),
+		rule("-A", "OUTPUT", "4444", "fw-510-out: "),
+	}
+	var got []string
+	for _, c := range setup {
+		got = append(got, c.Command)
+	}
+	if !equalArgs(got, want) {
+		t.Fatalf("setup commands:\n got %q\nwant %q", got, want)
+	}
+
+	// They are what repair deduces once the rules are gone
+	f.rules = map[string][][]string{}
+	if deduced := commands(t, p); !equalArgs(deduced, want) {
+		t.Fatalf("repair would deduce %q, not the approved %q", deduced, want)
 	}
 }
