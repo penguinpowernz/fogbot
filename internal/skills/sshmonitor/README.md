@@ -9,6 +9,7 @@ SSH is the usual way in to a Linux box. Failed logins on their own mean little,
 but a successful login from an address that has never connected before, a root
 login that skips the `sudo` audit trail, or someone guessing at the `sudo`
 password on a single-user workstation are all worth knowing about straight away.
+The SSH alerts only matter where `sshd` already runs for a real reason.
 
 ## How it works
 
@@ -59,10 +60,9 @@ config:
 
 ## Examples
 
-**A workstation that never takes inbound SSH.** If nobody should ever log in
-over SSH, then any accepted login is the alert. Leave `sshd` running (or don't
-install it and skip this example) and keep `alert_new_ip_login: true`: the first
-login from anywhere is a new IP.
+**A workstation that never takes inbound SSH.** Don't run `sshd` at all. To
+hear about anyone trying port 22, add `22` to `watch_inbound` in
+[port-tripwires](../porttripwires/README.md) (510).
 
 **Tighter brute force detection.** The default only trips on a fast,
 noisy guesser. A slow one spreading guesses out is caught with a wider window:

@@ -1,7 +1,7 @@
 # systemd-watch (550)
 
-Listens to systemd on D-Bus and alerts when units are reloaded or unit files
-change on disk.
+Listens to systemd on D-Bus and alerts when systemd reloads its configuration
+or unit files are enabled, disabled or masked.
 
 ## What it's for
 
@@ -26,6 +26,13 @@ that ships one. With `quiet_during_dpkg` on, signals that arrive while dpkg
 holds its lock (`/var/lib/dpkg/lock` or `lock-frontend`, held by `apt`,
 `unattended-upgrades` and PackageKit too) are logged and dropped.
 [pkg-monitor](../pkgmonitor/README.md) reports the package change instead.
+
+Neither signal says which unit was involved, so the alerts don't either.
+
+Writing a unit file, or its `.wants/` symlink, by hand raises nothing on its
+own: systemd only notices at the next reload or boot. Watch
+`/etc/systemd/system/` with [dir-watch](../dirwatch/README.md) to close that
+gap.
 
 ## Requirements
 
@@ -54,7 +61,11 @@ you would rather see every reload than trust that.
 
 **A reload you didn't cause.** With package runs filtered out, a daemon-reload
 you didn't run yourself deserves a look at
-`systemctl list-unit-files --state=enabled`.
+**Correlate with package changes.** `apt` reloads systemd whenever a package
+ships a unit. A daemon-reload that arrives without a
+[pkg-monitor](../pkgmonitor/README.md) alert next to it, and without you
+running `systemctl`, deserves a look at
+`systemctl list-unit-files --state=enabled` and `systemctl list-timers`.
 
 **User units aren't covered.** This listens to the system instance only.
 `systemctl --user` units in `~/.config/systemd/user/` need no root to install,

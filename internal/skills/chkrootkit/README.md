@@ -3,7 +3,7 @@
 > **Planned.** This skill has no code yet, so `fogbot skill enable` refuses it.
 > This page describes the design.
 
-Reads chkrootkit's output and forwards `INFECTED` and suspicious findings as
+Reads chkrootkit's output and forwards `INFECTED` and `WARNING` findings as
 alerts.
 
 ## What it's for
@@ -14,12 +14,14 @@ nothing.
 
 ## How it will work
 
-Follows `log_path` and raises a CONTACT alert for each `INFECTED` line (with
-`alert_on_infected`) and each suspicious finding (with `alert_on_suspicious`).
+Reads `log_path` each time chkrootkit rewrites it and raises a CONTACT alert
+for each `INFECTED` line (with `alert_on_infected`) and each `WARNING` line
+(with `alert_on_suspicious`).
 
 ## Requirements
 
-- chkrootkit, run on a schedule with its output written to `log_path`
+- chkrootkit, run on a schedule. Debian's package does this daily
+  (`chkrootkit.timer`) and writes the result to `/var/log/chkrootkit/log.today`.
 
 ## Configuration
 
@@ -28,7 +30,7 @@ Set in `/etc/fogbot/skills-available/610-chkrootkit.yaml` (shipped from
 
 ```yaml
 config:
-  log_path: /var/log/chkrootkit.log
+  log_path: /var/log/chkrootkit/log.today
   alert_on_infected: true
   alert_on_suspicious: true
 ```
@@ -37,17 +39,15 @@ config:
 |---|---|
 | `log_path` | File chkrootkit's output is written to |
 | `alert_on_infected` | Alert on `INFECTED` results |
-| `alert_on_suspicious` | Alert on suspicious files and processes |
+| `alert_on_suspicious` | Alert on `WARNING` results (suspicious files, processes, sniffers) |
 
 ## Examples
 
-**Getting a log to read.** Debian's package runs chkrootkit daily but mails
-the result rather than logging it. A cron job that writes it to a file works:
-
-```
-# /etc/cron.d/chkrootkit-log
-30 3 * * * root /usr/sbin/chkrootkit -q > /var/log/chkrootkit.log 2>&1
-```
+**Quiet the known warnings first.** chkrootkit flags some things on most
+systems. Review the `WARNING` lines in the first `log.today`, and once you're
+sure a finding is harmless, add a pattern matching just that line to
+`/etc/chkrootkit/chkrootkit.ignore`. `log.today` is written after that filter,
+so what reaches fogbot is new.
 
 ## Enabling
 

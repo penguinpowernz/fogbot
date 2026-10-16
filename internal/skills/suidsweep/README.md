@@ -18,7 +18,9 @@ strong sign something is wrong.
 2. With no approved baseline yet, the sweep is saved as a pending baseline and a
    NOMINAL "SUID Baseline Pending Approval" alert asks you to review it.
 3. Once approved, each sweep is compared against the baseline. A new SUID/SGID
-   file, or one whose contents changed, raises a CONTACT alert, once per change.
+   file ("New SUID/SGID Binary Detected"), or a baselined one whose contents,
+   mode or owner changed ("SUID/SGID Binary Modified"), raises a CONTACT alert,
+   once per change. Removed files are not reported.
 4. Accepting a change (e.g. after a package upgrade) is the same as the first
    approval:
 
@@ -46,7 +48,6 @@ Set in `/etc/fogbot/skills-available/200-suid-sweep.yaml` (shipped from
 ```yaml
 config:
   sweep_interval: 1h
-  baseline_file: /var/lib/fogbot/suid_baseline.json
   watch_paths:
     - /bin
     - /sbin
@@ -67,15 +68,26 @@ config:
 | `sweep_interval` | `1h` | Time between sweeps |
 | `watch_paths` | `/usr /bin /sbin /opt /home` | Directories walked, recursively |
 | `no_suid_paths` | none (shipped: `/home /root /tmp /var/tmp /dev/shm`) | Directories where any SUID/SGID file alerts; `[]` switches this off |
-| `baseline_file` | | Not used: baselines live in fogbot's state dir (`/var/lib/fogbot`) |
 
 ## Examples
+
+**Sweep the places nothing should be SUID.** There is no legitimate reason for
+a SUID file in a home directory, `/tmp` or `/var/tmp`. Those are exactly where
+an attacker would leave a root shell. Only SUID/SGID files are hashed, so the
+cost is the directory walk; lengthen the interval if `/home` is very large:
 
 **More places nothing should be SUID.** The shipped `no_suid_paths` cover
 where an attacker would leave a root shell. Add other directories your users
 can write to, such as a data disk or a shared directory:
 
 ```yaml
+config:
+  sweep_interval: 15m
+  watch_paths:
+    - /usr
+    - /bin
+    - /sbin
+    - /opt
   no_suid_paths:
     - /home
     - /root

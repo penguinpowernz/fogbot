@@ -15,6 +15,10 @@ how payloads run without a file. `ptrace` is how one process injects code into
 another. eBPF sees all of these in the kernel as they happen, with the parent
 process, which polling `/proc` can miss.
 
+For programs run from `/tmp`, `/dev/shm` or memfd, see
+[proc-exec](../procexec/README.md); for shells holding network connections, see
+[net-watch](../netwatch/README.md).
+
 ## How it will work
 
 Runs a bpftrace program on the `execve` and `ptrace` tracepoints and alerts on
@@ -56,22 +60,26 @@ config:
 ## Examples
 
 **Workstation services.** Servers on a workstation are things like a dev
-database, a Docker daemon or a local web app. None of them should start a
-shell:
+database or the print service. None of them should start a shell:
 
 ```yaml
 config:
   suspicious_parent_child:
-    - parent: node
-      child: [bash, sh, dash]
     - parent: mysqld
+      child: [bash, sh, dash]
+    - parent: redis-server
       child: [bash, sh, dash]
     - parent: cupsd
       child: [bash, sh, dash]
 ```
 
-**Debuggers.** Running `gdb` or `strace` yourself uses ptrace and will alert.
-If you debug often, set `alert_ptrace: false`.
+Leave out parents that run shell commands by design, such as `node` (npm
+scripts), `make` or your editor.
+
+**Known false positives.** Running `gdb` or `strace` yourself uses ptrace and
+will alert; if you debug often, set `alert_ptrace: false`. Build tools and
+package scripts run `python3 -c` and `perl -e` routinely; if that is too noisy,
+set `alert_interpreter_c_flag: false`.
 
 ## Enabling
 

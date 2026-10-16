@@ -20,7 +20,8 @@ Follows `log_path` and raises a CONTACT alert for each `Warning:` line (with
 
 ## Requirements
 
-- rkhunter, run on a schedule (Debian's package does this daily via cron)
+- rkhunter, run on a schedule. Debian's package ships a daily cron job but
+  leaves it off; set `CRON_DAILY_RUN="yes"` in `/etc/default/rkhunter`.
 
 ## Configuration
 
@@ -43,10 +44,11 @@ config:
 ## Examples
 
 **Quiet the known warnings first.** rkhunter warns about some things on every
-stock system (scripts in `/usr/bin` replaced by packages, hidden files in
-`/etc`). Run `sudo rkhunter --propupd` after installing, and whitelist the
-remaining known warnings in `/etc/rkhunter.conf`, so that what reaches fogbot is
-new.
+stock system (commands in `/usr/bin` that are scripts, hidden files in `/etc`).
+Run `sudo rkhunter --propupd` on a known-clean system (and again after package
+upgrades), and whitelist the remaining known warnings by exact path
+(`SCRIPTWHITELIST`, `ALLOWHIDDENFILE`) in `/etc/rkhunter.conf`, so that what
+reaches fogbot is new.
 
 ## Enabling
 
