@@ -1,17 +1,16 @@
 package porttripwires
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kballard/go-shellquote"
 
-	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
 
@@ -29,6 +28,13 @@ type PortTripwires struct {
 
 	// iptables runs the iptables command; nil means the real one
 	iptables iptablesRunner
+
+	// cooldown is how long a tripwire stays quiet after alerting for the same
+	// remote address and port
+	cooldown time.Duration
+
+	// kmsgPath is the kernel log device the LOG rules write to
+	kmsgPath string
 }
 
 // New creates a new PortTripwires skill from config
@@ -36,9 +42,10 @@ type PortTripwires struct {
 // Configure() will be called later with the actual YAML config.
 func NewDefault() *PortTripwires {
 	return &PortTripwires{
-		id:     510,
-		name:   "port-tripwires",
-		config: map[string]interface{}{},
+		id:       510,
+		name:     "port-tripwires",
+		config:   map[string]interface{}{},
+		cooldown: defaultCooldown,
 	}
 }
 
@@ -53,6 +60,7 @@ func New(cfg skills.SkillConfig) *PortTripwires {
 		config:          cfg.Config,
 		severityDefault: cfg.SeverityDefault,
 		enabled:         false,
+		cooldown:        defaultCooldown,
 	}
 }
 
@@ -70,6 +78,14 @@ func (p *PortTripwires) SetupHints() []string              { return nil }
 
 func (p *PortTripwires) Configure(cfg map[string]interface{}) error {
 	p.config = cfg
+	p.cooldown = defaultCooldown
+	if s, ok := cfg["alert_cooldown"].(string); ok {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < 0 {
+			return fmt.Errorf("invalid alert_cooldown %q", s)
+		}
+		p.cooldown = d
+	}
 	return nil
 }
 
@@ -291,20 +307,6 @@ func equalArgs(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// Watch monitors system logs for port tripwire alerts
-func (p *PortTripwires) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
-	alerts := make(chan notifier.Alert, 10)
-
-	go func() {
-		defer close(alerts)
-		// TODO: Implement log watching for the generated rule IDs
-		// This will monitor /var/log/kern.log or journalctl for our rule identifiers
-		<-ctx.Done()
-	}()
-
-	return alerts, nil
 }
 
 // extractPorts safely extracts port list from config
