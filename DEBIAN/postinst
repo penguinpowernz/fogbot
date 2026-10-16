@@ -42,30 +42,25 @@ for skill_file in "$CONTRIB_DIR/skills-available"/*.yaml; do
     fi
 done
 
-# Create state directory with proper permissions
-if [ ! -d "$STATE_DIR" ]; then
-    echo "Creating state directory..."
-    mkdir -p "$STATE_DIR"
-    mkdir -p "$STATE_DIR/baselines"
-    mkdir -p "$STATE_DIR/logs"
-    chown -R root:root "$STATE_DIR"
-    chmod 700 "$STATE_DIR"
-fi
+# State directory: holds the auth state, approved commands and baselines.
+# The package itself creates it (from var/lib/fogbot/), so fix its ownership and
+# mode every time rather than only when postinst is the one creating it.
+mkdir -p "$STATE_DIR/baselines" "$STATE_DIR/logs"
+chown -R root:root "$STATE_DIR"
+chmod 700 "$STATE_DIR"
 
-# Create systemd service if systemctl is available
-if command -v systemctl >/dev/null 2>&1; then
-    if [ -f /etc/systemd/system/fogbot.service ]; then
-        echo "Reloading systemd daemon..."
-        systemctl daemon-reload
+# Pick up the unit file (shipped in /lib/systemd/system, maybe overridden in
+# /etc/systemd/system) and restart a running daemon onto the new binary
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    echo "Reloading systemd daemon..."
+    systemctl daemon-reload
 
-        # Only enable/start if user explicitly wants it
-        # Don't auto-start on fresh install
-        if systemctl is-enabled fogbot.service >/dev/null 2>&1; then
-            echo "fogbot service is enabled, restarting..."
-            systemctl restart fogbot.service || true
-        else
-            echo "Run 'systemctl enable --now fogbot' to start fogbot"
-        fi
+    # Don't auto-start on fresh install
+    if systemctl is-enabled --quiet fogbot.service 2>/dev/null || systemctl is-active --quiet fogbot.service; then
+        echo "fogbot service is enabled, restarting..."
+        systemctl restart fogbot.service || true
+    else
+        echo "Run 'systemctl enable --now fogbot' to start fogbot"
     fi
 fi
 
