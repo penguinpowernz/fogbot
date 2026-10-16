@@ -58,6 +58,9 @@ type Tailer struct {
 	// pending holds keyed SYSCALL events, by audit serial, until their
 	// CWD/PATH records and EOE arrive. Only touched by the processing goroutine.
 	pending map[string]*pendingEvent
+
+	// dead is set when the tailer stopped reading on its own. Guarded by mu.
+	dead bool
 }
 
 // pendingEvent is a SYSCALL event waiting for the rest of its records
@@ -110,6 +113,12 @@ func NewTailer(logPath string) (*Tailer, error) {
 func (t *Tailer) Subscribe(key string, events chan<- Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if t.dead {
+		// Nothing will ever arrive, so tell the subscriber straight away
+		close(events)
+		return
+	}
 
 	if t.subscribers[key] == nil {
 		t.subscribers[key] = make([]chan<- Event, 0)
@@ -179,6 +188,12 @@ func (t *Tailer) Stop() {
 // processLines reads lines from the tail and parses them
 func (t *Tailer) processLines() {
 	defer t.wg.Done()
+	defer func() {
+		if t.ctx.Err() == nil {
+			log.Printf("[audit-tailer] Stopped reading %s: %v", t.logPath, t.tail.Err())
+			t.fail()
+		}
+	}()
 
 	ticker := time.NewTicker(pendingTimeout / 2)
 	defer ticker.Stop()
@@ -453,6 +468,30 @@ func (t *Tailer) parseLine(line string) *Event {
 	}
 
 	return event
+}
+
+// fail marks the tailer dead and closes every subscriber's channel. Otherwise
+// the file and dir watchers would carry on, looking healthy, without ever
+// receiving another event; with their channels closed they exit, which raises
+// a DEADMAN alert. Only called from processLines, so distribute can't be
+// sending on a channel as it is closed.
+func (t *Tailer) fail() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.dead = true
+	for _, subs := range t.subscribers {
+		for _, ch := range subs {
+			close(ch)
+		}
+	}
+	t.subscribers = make(map[string][]chan<- Event)
+}
+
+// Dead reports whether the tailer stopped reading the audit log on its own
+func (t *Tailer) Dead() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.dead
 }
 
 // distribute sends an event to all subscribers for its key

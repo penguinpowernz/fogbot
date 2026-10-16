@@ -36,7 +36,7 @@ fogbot/
 │   │   ├── 610-chkrootkit/      # Go impl: chkrootkit log parser
 │   │   ├── 700-kernel-mod/      # Go impl: dmesg watcher
 │   │   ├── 710-net-watch/       # Go impl: ss+proc outbound watcher
-│   │   ├── 715-net-discover/    # Go impl: fping network scanner
+│   │   ├── 715-net-discover/    # Go impl: passive LAN host discovery
 │   │   ├── 720-usb-monitor/     # Go impl: udev events + lsusb polling
 │   │   ├── 800-bpftrace-exec/   # Go impl: bpftrace exec monitor
 │   │   └── 900-resource-anomaly/ # Go impl: /proc resource polling

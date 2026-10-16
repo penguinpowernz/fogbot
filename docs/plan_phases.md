@@ -151,7 +151,7 @@ Architectural decisions (interfaces, package structure, config format) are estab
 - [ ] `internal/skills/700-kernel-mod/` — dmesg: module load/unload, `/proc/sys/kernel` changes, `LD_PRELOAD`, ASLR knob
 - [ ] `internal/skills/900-resource-anomaly/` — CPU/mem/IO anomaly, crypto miner heuristics
 - [ ] `internal/skills/710-net-watch/` — `ss`/`/proc/net/tcp`: unexpected outbound by process, suspicious correlations
-- [ ] `internal/skills/715-net-discover/` — `fping` network sweep every 5min, baseline tracking, new IP alerts with Intel button
+- [ ] `internal/skills/715-net-discover/` — passive host discovery (neighbour table, ARP/DHCP broadcasts), per-network MAC baseline, new host alerts with Intel button
 - [ ] `internal/skills/720-usb-monitor/` — USB device plug/unplug detection via udev events (primary) or lsusb polling (fallback)
   - Alert on new USB storage, keyboards, network adapters
   - Track vendor ID, product ID, serial number, device type

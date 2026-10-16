@@ -116,7 +116,7 @@ Tab completion is provided for `enable` and `disable` — `enable` completes fro
  610  chkrootkit         disabled  chkrootkit            Parse chkrootkit output for suspicious findings
  700  kernel-mod         disabled  root, dmesg           Kernel module load/unload, sysctl changes
  710  net-watch          disabled  /proc/net             Unexpected outbound connections by process
- 715  net-discover       disabled  fping, root           Network discovery, new IP detection, baseline
+ 715  net-discover       disabled  root                  Passive LAN host discovery, new MAC detection, baseline
  720  usb-monitor        disabled  udev or lsusb         USB device plug/unplug detection
  800  bpftrace-exec      disabled  bpftrace, root        Suspicious exec chains, ptrace, droppers
  900  resource-anomaly   disabled  /proc                 CPU/mem/IO spikes, crypto miner heuristics
@@ -287,19 +287,18 @@ Reports: full path of new entry, whether it is a file or directory, permissions,
 
 ---
 
-### 12. Network Discovery Monitor (`fping` + baseline)
+### 12. Network Discovery Monitor (passive + baseline)
 **Skill ID:** 715 (net-discover)
 **Analogy: Spotting unfamiliar faces in a known area**
 
-- Uses `fping` to sweep local network(s) every 5 minutes
-- Maintains baseline of known IPs in `/var/lib/fogbot/net_baseline.json`
-- Excludes own IP(s) from scanning to avoid self-detection
-- Alerts on new IPs appearing on the network
-- Configurable network ranges (CIDR notation)
-- First run establishes baseline, operator approves on the host with `sudo fogbot baseline approve`
-- **Intel button** on alerts triggers active reconnaissance (nmap, arp-scan, DNS)
+- Sends no traffic: learns hosts from the kernel neighbour table and, optionally, ARP and DHCP broadcasts read from a raw socket (not promiscuous)
+- Tracks hosts by MAC address, since DHCP moves IPs around
+- One baseline per network, keyed by the gateway's MAC, so a roaming laptop isn't compared against home
+- Learns silently on networks with no approved baseline; operator approves on the host with `sudo fogbot baseline approve`
+- Alerts on new MACs on approved networks
+- **Intel button** on alerts triggers active reconnaissance (nmap, arp-scan, DNS), only when tapped
 
-Reports: IP, MAC address, first-seen timestamp, reverse DNS if available.
+Reports: IP, MAC address, MAC vendor, first-seen timestamp, reverse DNS if available.
 
 ---
 

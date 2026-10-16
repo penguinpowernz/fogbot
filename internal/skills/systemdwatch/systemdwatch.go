@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -17,17 +19,25 @@ const (
 	SkillName = "systemd-watch"
 )
 
+// dpkgLocks are the locks dpkg and its frontends (apt, unattended-upgrades,
+// PackageKit) hold for the whole of a package run, maintainer scripts included
+var dpkgLocks = []string{"/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock"}
+
 // SystemdWatch monitors systemd via D-Bus for daemon-reload and unit changes
 type SystemdWatch struct {
-	mu      sync.RWMutex
-	enabled bool
-	config  map[string]interface{}
+	mu              sync.RWMutex
+	enabled         bool
+	config          map[string]interface{}
+	quietDuringDpkg bool
+	dpkgLocks       []string
 }
 
 // New creates a SystemdWatch with default config (used by daemon registry).
 func New() *SystemdWatch {
 	return &SystemdWatch{
-		enabled: false,
+		enabled:         false,
+		quietDuringDpkg: true,
+		dpkgLocks:       dpkgLocks,
 	}
 }
 
@@ -82,6 +92,9 @@ func (s *SystemdWatch) Configure(cfg map[string]interface{}) error {
 	defer s.mu.Unlock()
 	log.Printf("[systemd-watch] Configure called with config: %+v", cfg)
 	s.config = cfg
+	if v, ok := cfg["quiet_during_dpkg"].(bool); ok {
+		s.quietDuringDpkg = v
+	}
 	return nil
 }
 
@@ -194,7 +207,37 @@ func fromSystemd(conn *dbus.Conn, sig *dbus.Signal) bool {
 	return sig.Sender == owner
 }
 
+// dpkgRunning reports whether any of locks is held by another process, which
+// for the dpkg locks means a package is being installed, removed or upgraded.
+// F_GETLK only tests the lock; it never takes it, so dpkg is not blocked.
+func dpkgRunning(locks []string) bool {
+	for _, path := range locks {
+		f, err := os.Open(path)
+		if err != nil {
+			continue // no dpkg on this system, or nothing has ever locked it
+		}
+		lk := syscall.Flock_t{Type: syscall.F_WRLCK}
+		err = syscall.FcntlFlock(f.Fd(), syscall.F_GETLK, &lk)
+		f.Close()
+		if err == nil && lk.Type != syscall.F_UNLCK {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *SystemdWatch) handleSignal(sig *dbus.Signal, alerts chan<- notifier.Alert) {
+	s.mu.RLock()
+	quiet, locks := s.quietDuringDpkg, s.dpkgLocks
+	s.mu.RUnlock()
+
+	// Package maintainer scripts reload systemd and enable units as a matter
+	// of course; pkg-monitor reports the package change itself
+	if quiet && dpkgRunning(locks) {
+		log.Printf("[systemd-watch] Ignoring %s: dpkg is running", sig.Name)
+		return
+	}
+
 	var alert notifier.Alert
 
 	switch sig.Name {

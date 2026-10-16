@@ -127,16 +127,23 @@ dedup:
 
 ### Behavior
 
-1. First alert of its type → sent immediately
-2. Similar alerts within window → suppressed
-3. After `max_burst` alerts → digest sent instead
-4. After window expires → next alert sent normally
+Alerts of the same type (skill + title + location) are counted per window:
+
+1. The first `max_burst` alerts in the window → sent immediately
+2. Any more in the window → held back, not dropped
+3. When the window ends → one digest reports the held-back alerts, carrying the latest of them
+4. After the window → the next alert is sent normally
+
+Held-back alerts are always reported, even if no further alert of the type
+arrives: a batch install of 15 packages sends 10 alerts at once and a digest
+of the other 5 when the window ends. CONTACT alerts work the same way with
+`contact_burst`, grouped by skill + title only (see above).
 
 ### Digest Format
 
 Digested alerts include count:
 ```
-🟡 [MOVEMENT] SSH Brute Force (digest: 47 events)
+🟡 [MOVEMENT] Package Installed (digest: 5 more)
 ```
 
 ## Quiet Hours (Future)

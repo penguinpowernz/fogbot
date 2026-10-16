@@ -15,4 +15,7 @@ requires:
 tags: [persistence, systemd, configuration]
 severity_default: yellow
 requires_approval: false
-config: {}
+config:
+  # Ignore reloads and unit file changes while dpkg is running (apt upgrades);
+  # pkg-monitor reports the package change itself
+  quiet_during_dpkg: true

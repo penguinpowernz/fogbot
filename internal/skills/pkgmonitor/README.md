@@ -21,9 +21,8 @@ dpkg's action lines:
 | `remove <pkg>:<arch> <ver>` | Package Removed | MOVEMENT |
 | `upgrade <pkg>:<arch> <old> <new>` | Package Upgraded | MOVEMENT |
 
-Each kind of alert is rate limited: after the first `dedup.max_burst` (default
-10, set in `/etc/fogbot/config.yaml`) in a dedup window, the rest are held and
-sent as one digest when the window ends, so a large `apt upgrade` arrives as
+MOVEMENT alerts over the dedup burst (`max_burst`, default 10) are batched
+into a digest sent when the window ends, so a large `apt upgrade` arrives as
 a handful of messages rather than hundreds.
 
 It only sees dpkg. Software from snap, flatpak, pip or a binary copied into

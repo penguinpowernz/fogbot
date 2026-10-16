@@ -218,14 +218,9 @@ func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 
 	alerts := make(chan notifier.Alert, 10)
 
-	// Get the shared global audit tailer
-	tailer, err := auditlog.GetGlobalTailer()
+	// Get the shared global audit tailer, started (safe to call multiple times)
+	tailer, err := auditlog.StartGlobalTailer()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get audit tailer: %w", err)
-	}
-
-	// Start the tailer (safe to call multiple times)
-	if err := auditlog.StartGlobalTailer(); err != nil {
 		return nil, fmt.Errorf("failed to start audit tailer: %w", err)
 	}
 
