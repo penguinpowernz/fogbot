@@ -1,31 +1,30 @@
 id: 715
 name: net-discover
 description: >
-  Discovers hosts on local network(s) using fping every 5 minutes.
-  Maintains baseline of known IPs and alerts when new hosts appear.
-  Excludes own IP(s) from scanning.
+  Passively learns the hosts on the local network from the kernel's
+  neighbour table and from ARP and DHCP broadcasts, keeps a baseline of
+  their MAC addresses per network, and alerts when a new one appears.
+  Sends no traffic of its own.
 why: >
-  New devices appearing on your network can indicate unauthorized access,
-  lateral movement after initial compromise, or rogue devices. Tracking
-  network membership is essential for detecting pivoting attackers or
-  compromised IoT devices phoning home. The Intel button allows immediate
-  active reconnaissance (nmap, arp-scan) on unknown hosts without leaving
-  the Telegram interface.
+  A device joining your network that you didn't add could be a rogue
+  access point, a drop box someone plugged in, or a neighbour on your
+  Wi-Fi. Listening rather than sweeping keeps fogbot invisible on the
+  network: it watches and reports, it doesn't probe. The Intel button
+  offers active reconnaissance (nmap, arp-scan) on a new host, only when
+  the operator taps it.
 requires:
-  - fping
   - root
-tags: [network, discovery, baseline, lateral-movement]
+tags: [network, discovery, baseline]
 severity_default: red
 intel_module: net-scan
 config:
-  scan_interval: 5m
-  networks:
-    - 192.168.1.0/24
-    # Add additional CIDR ranges as needed
-  exclude_ips: []  # Auto-populated with host's own IPs at enable time
-  baseline_file: /var/lib/fogbot/net_baseline.json
-  baseline_approval_required: true
-  fping_timeout: 500ms
-  fping_retries: 2
-  include_mac_lookup: true
+  # Empty means the interface holding the default route
+  interfaces: []
+  # How often to read the kernel neighbour table
+  poll_interval: 1m
+  # Also read ARP and DHCP broadcasts off the wire (raw socket, not
+  # promiscuous), to see hosts that never talk to this one
+  listen_broadcasts: true
+  exclude_macs: []
+  include_mac_vendor: true
   include_reverse_dns: true
