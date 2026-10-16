@@ -32,6 +32,12 @@ type SSHMonitor struct {
 	knownIPs             map[string]bool // Track IPs we've seen before
 	failuresByIP         map[string][]time.Time
 	authLogPath          string
+
+	// source is where auth events are read from: "journal" (the default),
+	// which records who sent each message, or "file", the auth.log text,
+	// which any local user can write fake lines to
+	source     string
+	journalctl string // the journalctl binary
 }
 
 // ipPattern matches IPv4 and IPv6 addresses (sshd logs IPv6 unbracketed, e.g. 2001:db8::1)
@@ -75,18 +81,20 @@ func New() *SSHMonitor {
 		alertNewIPLogin:     true,
 		quietHoursExempt:    false,
 		authLogPath:         "/var/log/auth.log",
+		source:              "journal",
+		journalctl:          "journalctl",
 	}
 }
 
 func (s *SSHMonitor) ID() int         { return SkillID }
 func (s *SSHMonitor) Name() string    { return SkillName }
 func (s *SSHMonitor) Description() string {
-	return "Monitors /var/log/auth.log for SSH authentication events"
+	return "Monitors the systemd journal's auth messages for SSH authentication events"
 }
 func (s *SSHMonitor) Why() string {
 	return "SSH is the most common remote access vector. Brute force and new-IP logins are high-value indicators."
 }
-func (s *SSHMonitor) Requires() []string { return []string{"auth.log read access"} }
+func (s *SSHMonitor) Requires() []string { return []string{"systemd journal read access"} }
 func (s *SSHMonitor) Tags() []string     { return []string{"auth", "ssh", "brute-force"} }
 func (s *SSHMonitor) DropIns() []skills.DropIn    { return nil }
 func (s *SSHMonitor) SetupHints() []string        { return nil }
@@ -133,9 +141,17 @@ func (s *SSHMonitor) Configure(cfg map[string]interface{}) error {
 		s.quietHoursExempt = exempt
 	}
 
-	// Allow custom auth log path (useful for testing)
+	// Setting auth_log_path reads that file, as before the journal was used
+	s.source = "journal"
 	if path, ok := cfg["auth_log_path"].(string); ok {
 		s.authLogPath = path
+		s.source = "file"
+	}
+	if source, ok := cfg["log_source"].(string); ok {
+		if source != "journal" && source != "file" {
+			return fmt.Errorf("invalid log_source %q: use journal or file", source)
+		}
+		s.source = source
 	}
 
 	return nil
@@ -151,6 +167,12 @@ func (s *SSHMonitor) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 
 func (s *SSHMonitor) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
+
+	if s.source == "journal" {
+		s.watchJournal(ctx, alertChan)
+		return
+	}
+	log.Printf("[ssh-monitor] Reading %s: its lines can't be traced to their sender, so local users can fake events (log_source: journal can)", s.authLogPath)
 
 	// Follow from the end of the file. ReOpen handles rotation and truncation by
 	// reading the replacement file from the start, and waits if the file is missing.
