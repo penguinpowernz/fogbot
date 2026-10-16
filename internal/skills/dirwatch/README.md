@@ -6,10 +6,18 @@ watched folders, with the user and program that did it.
 ## What it's for
 
 Before an attacker can run their tools or set up persistence they have to put
-something on disk: a binary in `/usr/local/bin`, a job in `/etc/cron.d`, a key
-in `~/.ssh/authorized_keys`, a desktop autostart entry. This catches that
-delivery step. Because it uses auditd rather than inotify, every alert says who
-did it (UID, login UID, PID, parent PID, executable).
+something on disk: a binary in `/usr/local/bin` or `~/.local/bin`, a desktop
+autostart entry, a user systemd unit. This catches that delivery step in any
+directory you name. Because it uses auditd rather than inotify, every alert
+says who did it (UID, login UID, PID, parent PID, executable).
+
+It is the general-purpose fallback. Where a dedicated skill owns the job, use
+that instead: [file-watch](../filewatch/README.md) for specific sensitive files
+such as `~/.ssh/authorized_keys`, [suid-sweep](../suidsweep/README.md) for SUID
+binaries, [systemd-watch](../systemdwatch/README.md) for system units (though
+`/etc/systemd/system/` here catches unit files written without a reload). The
+default `/etc/cron.d/` covers cron while [cron-watch](../cronwatch/README.md)
+is still planned.
 
 ## How it works
 
@@ -20,8 +28,9 @@ before anything runs:
 auditctl -w /usr/local/bin/ -p wa -k fb-dir-540
 ```
 
-`-p wa` catches writes and attribute changes: creating, renaming, chmod-ing or
-writing any file. fogbot re-applies the approved rules at startup. After
+`-p wa` catches writes and attribute changes: creating, writing, renaming,
+deleting or chmod-ing anything in the tree. All of them raise the same alert,
+worded as a new entry. fogbot re-applies the approved rules at startup. After
 changing `watch_paths`, run `sudo fogbot skill enable dir-watch` again to
 approve the new rules.
 
@@ -55,7 +64,7 @@ config:
 | Key | Default | Meaning |
 |---|---|---|
 | `watch_paths` | `/usr/local/bin/ /etc/cron.d/ /root/` | Absolute directories to watch |
-| `glob_filter` | `""` (everything) | Only alert for file names matching this glob, e.g. `*.sh` |
+| `glob_filter` | `""` (everything) | Only alert for file names matching this glob, e.g. `*.sh`. Applies to every watched path |
 | `whitelist` | `[]` | File names (not paths) to ignore |
 | `recursive` | `false` | Not used: an auditd directory watch always covers the whole tree |
 
@@ -70,11 +79,10 @@ config:
     - /home/alice/.config/autostart/
     - /home/alice/.config/systemd/user/
     - /home/alice/.local/bin/
-    - /home/alice/.ssh/
 ```
 
-`~/.config/systemd/user/` also covers the gap in
-[systemd-watch](../systemdwatch/README.md), which only sees system units.
+`~/.config/systemd/user/` covers the gap in systemd-watch, which only sees
+system units.
 
 **Root's home is busy.** `/root/` is watched by default, and root's shell
 writes `.bash_history`, `.viminfo` and `.lesshst` all the time. Whitelist them
@@ -83,15 +91,6 @@ so the alerts that remain mean something:
 ```yaml
 config:
   whitelist: [.bash_history, .viminfo, .lesshst, .wget-hsts]
-```
-
-**Only scripts.** For a directory that sees a lot of legitimate churn, alert
-only on the kind of file you care about:
-
-```yaml
-config:
-  watch_paths: [/srv/www/]
-  glob_filter: "*.php"
 ```
 
 ## Enabling

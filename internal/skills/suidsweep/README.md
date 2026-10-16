@@ -18,7 +18,9 @@ strong sign something is wrong.
 2. With no approved baseline yet, the sweep is saved as a pending baseline and a
    NOMINAL "SUID Baseline Pending Approval" alert asks you to review it.
 3. Once approved, each sweep is compared against the baseline. A new SUID/SGID
-   file, or one whose contents changed, raises a CONTACT alert, once per change.
+   file ("New SUID/SGID Binary Detected"), or a baselined one whose contents,
+   mode or owner changed ("SUID/SGID Binary Modified"), raises a CONTACT alert,
+   once per change. Removed files are not reported.
 4. Accepting a change (e.g. after a package upgrade) is the same as the first
    approval:
 
@@ -52,14 +54,15 @@ config:
 | Key | Default | Meaning |
 |---|---|---|
 | `sweep_interval` | `1h` | Time between sweeps |
-| `watch_paths` | `/usr /bin /sbin /opt /home` | Directories walked, recursively |
+| `watch_paths` | the six bin/sbin dirs above | Directories walked recursively; symlinks are not followed. If the key is missing, `/usr /bin /sbin /opt /home` |
 | `baseline_file` | | Not used: baselines live in fogbot's state dir (`/var/lib/fogbot`) |
 
 ## Examples
 
 **Sweep the places nothing should be SUID.** There is no legitimate reason for
 a SUID file in a home directory, `/tmp` or `/var/tmp`. Those are exactly where
-an attacker would leave a root shell, and on a workstation the sweep is cheap:
+an attacker would leave a root shell. Only SUID/SGID files are hashed, so the
+cost is the directory walk; lengthen the interval if `/home` is very large:
 
 ```yaml
 config:

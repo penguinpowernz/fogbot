@@ -21,7 +21,9 @@ Every `poll_interval`:
 | `log_path` not modified within `log_freshness_threshold` | [DEADMAN] Stale audit.log | CONTACT |
 | Any of the above clears | [DEADMAN] Recovered: ... | NOMINAL |
 
-Each condition alerts once when it starts and once when it clears.
+Each condition alerts once when it starts and once when it clears. The checks
+run in order and stop at the first failure, so while auditd is stopped you get
+only the stopped alert, not log alerts as well.
 
 ## Requirements
 

@@ -18,6 +18,10 @@ and alerts on a process above `cpu_threshold_pct` for longer than
 `cpu_sustained_seconds`, above `memory_threshold_mb`, or reading/writing faster
 than `io_threshold_mb_per_sec`.
 
+Hidden processes (a PID in `/proc` that `ps` doesn't show) are a rootkit sign,
+not a resource one; that check is planned for
+[proc-exec](../procexec/README.md).
+
 ## Requirements
 
 - `/proc`
@@ -34,7 +38,6 @@ config:
   cpu_sustained_seconds: 30
   memory_threshold_mb: 1024
   io_threshold_mb_per_sec: 50
-  check_process_hiding: true
 ```
 
 | Key | Meaning |
@@ -44,18 +47,20 @@ config:
 | `cpu_sustained_seconds` | How long CPU must stay high before alerting |
 | `memory_threshold_mb` | Resident memory that alerts |
 | `io_threshold_mb_per_sec` | Disk throughput that alerts |
-| `check_process_hiding` | Compare `/proc` against other process listings |
 
 ## Examples
 
 **Builds and browsers.** Compiling and video calls legitimately pin the CPU on
-a workstation. A sustained threshold of several minutes catches a miner, which
-never stops, without alerting on every build:
+a workstation, and browsers and IDEs often hold more than 1 GB. A sustained
+threshold of several minutes catches a miner, which never stops, without
+alerting on every build; raise the memory threshold above what your usual apps
+use:
 
 ```yaml
 config:
   cpu_threshold_pct: 80
   cpu_sustained_seconds: 600
+  memory_threshold_mb: 4096
 ```
 
 ## Enabling

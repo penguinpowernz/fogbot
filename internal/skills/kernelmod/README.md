@@ -19,7 +19,8 @@ to find it.
 
 Follows the kernel log for module load/unload messages, polls each of
 `watch_sysctl_paths` for changes from their startup values, and checks
-processes for an `LD_PRELOAD` environment variable.
+processes for an `LD_PRELOAD` environment variable. The system-wide
+`/etc/ld.so.preload` file belongs to [fs-anomaly](../fsanomaly/README.md).
 
 ## Requirements
 
@@ -67,12 +68,16 @@ config:
     - /proc/sys/net/ipv4/ip_forward
 ```
 
-`ip_forward` turning on, on a machine that isn't a router, means it is being
-set up as a pivot.
+`ip_forward` turning on, on a machine that doesn't route (no VMs, no VPN
+gateway), suggests it is being set up as a pivot.
 
 **Module loads on a laptop.** Plugging in USB devices loads modules, so expect
 alerts then. A module load while the machine is idle and you're away is the one
 to look at.
+
+**`LD_PRELOAD` on a desktop.** Some programs set it legitimately (Steam,
+overlays like MangoHud). Expect alerts from those; a preload from `/tmp`,
+`/dev/shm` or a home directory is the one to look at.
 
 ## Enabling
 

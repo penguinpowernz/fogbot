@@ -1,18 +1,24 @@
 # cron-watch (520)
 
 > **Planned.** This skill has no code yet, so `fogbot skill enable` refuses it.
-> This page describes the design. Until it lands,
-> [dir-watch](../dirwatch/README.md) covers most of it.
+> This page describes the design. Until it lands, add the cron directories to
+> [dir-watch](../dirwatch/README.md) (it watches `/etc/cron.d/` by default).
 
-Watches the places scheduled tasks and login scripts live and alerts when one
-is added or changed.
+Watches the places cron and at jobs live and alerts when one is added or
+changed.
 
 ## What it's for
 
-Once in, an attacker wants to stay in, and something that runs on a schedule
-or at every login is the easiest way: a cron job that re-downloads the implant,
-a systemd timer, a line in `rc.local` or `/etc/profile.d`. All of them are
-files appearing or changing in a short list of directories.
+Once in, an attacker wants to stay in, and a job that runs on a schedule is
+the easiest way: a cron job that re-downloads the implant every hour, or an
+`at` job that brings it back later. Every one of them is a file appearing or
+changing in a short list of places.
+
+Other persistence spots belong to other skills:
+
+- systemd services and timers: [systemd-watch](../systemdwatch/README.md)
+- `~/.config/autostart/`: [dir-watch](../dirwatch/README.md)
+- `/etc/rc.local`, `/etc/profile.d/`, `~/.bashrc`, `~/.profile`: [file-watch](../filewatch/README.md) with `wa`
 
 ## How it will work
 
@@ -31,15 +37,14 @@ Set in `/etc/fogbot/skills-available/520-cron-watch.yaml` (shipped from
 ```yaml
 config:
   watch_paths:
+    - /etc/crontab
     - /etc/cron.d
     - /etc/cron.daily
     - /etc/cron.hourly
     - /etc/cron.monthly
     - /etc/cron.weekly
-    - /var/spool/cron
-    - /etc/systemd/system
-    - /etc/rc.local
-    - /etc/profile.d
+    - /var/spool/cron/crontabs
+    - /var/spool/cron/atjobs
 ```
 
 | Key | Meaning |
@@ -48,18 +53,15 @@ config:
 
 ## Examples
 
-**Per-user persistence.** Users' own crontabs live in `/var/spool/cron`, but
-their login scripts don't:
+**Fedora/RHEL spool paths.** The defaults are Debian's. On Red Hat-family
+systems user crontabs and at jobs live elsewhere:
 
 ```yaml
-    - /home/alice/.bashrc
-    - /home/alice/.profile
-    - /home/alice/.config/autostart
+    - /var/spool/cron
+    - /var/spool/at
 ```
 
-**Watch `rc.local` even if it doesn't exist.** Most modern systems have no
-`/etc/rc.local`, which is why it's a good place to hide: systemd still runs it
-if it appears and is executable. Its creation is the alert.
+**anacron.** If anacron is installed, add `/etc/anacrontab` too.
 
 ## Enabling
 

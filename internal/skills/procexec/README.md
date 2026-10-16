@@ -6,8 +6,8 @@ Alerts when a program runs from a staging directory such as `/tmp` or
 ## What it's for
 
 Installed software runs from `/usr`, `/opt` and the like. Droppers download
-their payload into somewhere world-writable (`/tmp`, `/dev/shm`, `/run/user`)
-and run it from there. More careful malware writes the payload into an
+their payload into somewhere writable (`/tmp`, `/dev/shm`, `/run/user`) and
+run it from there. More careful malware writes the payload into an
 anonymous in-memory file (`memfd_create`) and executes that, so it never touches
 the disk at all.
 
@@ -26,7 +26,8 @@ For each process it reads `/proc/<pid>/exe`:
 | `/memfd:...` (with `detect_memfd_exec`) | Fileless Process Execution | CONTACT |
 
 The alert includes the PID, process name and full command line. Each process is
-reported once.
+reported once per program it runs: a process that execs something new is
+checked again.
 
 ## Requirements
 
@@ -51,10 +52,13 @@ config:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `poll_interval` | `5s` | Time between `/proc` scans |
-| `suspicious_paths` | `/tmp /dev/shm /run/user` | Directories (and everything under them) to alert on |
+| `poll_interval` | `30s` | Time between `/proc` scans |
+| `suspicious_paths` | `/tmp /dev/shm /run` | Directories (and everything under them) to alert on |
 | `detect_memfd_exec` | `true` | Alert on executables run from memfd |
-| `check_process_hiding` | | Not implemented yet |
+| `check_process_hiding` | `true` | Not implemented yet; has no effect |
+
+Defaults are the shipped values. If a key is left out, the skill falls back to
+`5s` and `/tmp /dev/shm /run/user`.
 
 A path matches only on a directory boundary: `/tmp` matches `/tmp/x` and
 `/tmp/a/b`, not `/tmpfiles/x`.
@@ -83,10 +87,11 @@ lot of workstation compromises start. If you never do that yourself, add it:
 ```
 
 **Known false positives.** AppImages mount themselves under `/tmp/.mount_*` and
-run from there, so each AppImage you start alerts. Some container runtimes
-briefly re-exec themselves from memfd (`/memfd:runc_cloned...`) when starting a
-container; set `detect_memfd_exec: false` on hosts that run containers if that
-is too noisy.
+run from there, so each AppImage you start alerts. If you run containers, runc
+may briefly re-exec itself from memfd (`/memfd:runc_cloned...`) as each one
+starts. There is no per-path or per-name exclusion, so the only way to silence
+either is to remove the path or turn off `detect_memfd_exec`, which also hides
+real fileless execution.
 
 ## Enabling
 
