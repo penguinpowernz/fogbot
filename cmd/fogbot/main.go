@@ -495,6 +495,14 @@ func handleStart(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 	authState.MarkPendingAuth(cmd.ChatID)
 	log.Printf("Chat %s marked as pending authorization", cmd.ChatID)
 
+	// "/start FOG-XXXX-XXXX" pairs straight away, as the help text's format
+	// suggests, rather than ignoring the code and asking for it again
+	for _, word := range cmd.Args[1:] {
+		if c := strings.ToUpper(word); auth.ValidateCode(c) && handleAuthCodeReceived(ctx, cmd.ChatID, c, authState, notif) {
+			return
+		}
+	}
+
 	// Send instructions
 	sendSimpleMessage(ctx, notif, cmd.ChatID, "🔐 *Authorization Required*\n\n"+
 		"Please enter the authorization code shown in your fogbot daemon logs.\n\n"+
