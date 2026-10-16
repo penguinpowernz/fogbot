@@ -88,7 +88,8 @@ func TestRun_AlertsAndSeverity(t *testing.T) {
 		t.Fatalf("expected 2 alerts, got %d: %+v", len(got), got)
 	}
 	in, out := got[0], got[1]
-	if in.Severity != notifier.SeverityMovement || in.Location != "port 445/tcp" || in.SkillID != 510 {
+	// Nothing should connect to a workstation on these ports
+	if in.Severity != notifier.SeverityContact || !in.Acknowledge || in.Location != "port 445/tcp" || in.SkillID != 510 {
 		t.Errorf("bad inbound alert: %+v", in)
 	}
 	if out.Severity != notifier.SeverityContact || !out.Acknowledge || out.Location != "port 4444/tcp" {

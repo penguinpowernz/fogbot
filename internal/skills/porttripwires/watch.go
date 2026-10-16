@@ -233,19 +233,21 @@ func (p *PortTripwires) parseRecord(rec string) (hit, bool) {
 	return h, true
 }
 
-// alertFor builds the alert for a tripwire hit. Outbound traffic to a watched
-// port is what malware phoning home looks like, so it is CONTACT. Inbound hits
-// are usually scanners; they are MOVEMENT, and share a Location per port so
-// the dedup engine folds a scan from many addresses into a digest.
+// alertFor builds the alert for a tripwire hit. Every hit is CONTACT: fogbot
+// guards developer workstations, which nothing should be connecting to on
+// these ports, so an inbound hit is lateral movement or targeted scanning,
+// and an outbound one is what malware phoning home looks like.
 func (p *PortTripwires) alertFor(h hit, now time.Time) notifier.Alert {
 	alert := notifier.Alert{
-		SkillID:   p.id,
-		SkillName: p.name,
-		Size:      "1 connection",
-		Location:  fmt.Sprintf("port %s/%s", h.dpt, h.proto),
-		Unit:      fmt.Sprintf("src=%s:%s dst=%s:%s", h.src, h.spt, h.dst, h.dpt),
-		Time:      now,
-		Equipment: fmt.Sprintf("iptables %s (iface %s)", h.tripwire.chain, h.iface),
+		Severity:    notifier.SeverityContact,
+		Acknowledge: true,
+		SkillID:     p.id,
+		SkillName:   p.name,
+		Size:        "1 connection",
+		Location:    fmt.Sprintf("port %s/%s", h.dpt, h.proto),
+		Unit:        fmt.Sprintf("src=%s:%s dst=%s:%s", h.src, h.spt, h.dst, h.dpt),
+		Time:        now,
+		Equipment:   fmt.Sprintf("iptables %s (iface %s)", h.tripwire.chain, h.iface),
 		Metadata: map[string]string{
 			"direction": h.tripwire.direction,
 			"proto":     h.proto,
@@ -258,12 +260,9 @@ func (p *PortTripwires) alertFor(h hit, now time.Time) notifier.Alert {
 	}
 
 	if h.tripwire.direction == "out" {
-		alert.Severity = notifier.SeverityContact
 		alert.Title = "Outbound Connection to Tripwire Port"
 		alert.Activity = fmt.Sprintf("Outbound %s to %s port %s", strings.ToUpper(h.proto), h.dst, h.dpt)
-		alert.Acknowledge = true
 	} else {
-		alert.Severity = notifier.SeverityMovement
 		alert.Title = "Inbound Connection to Tripwire Port"
 		alert.Activity = fmt.Sprintf("Inbound %s from %s to port %s", strings.ToUpper(h.proto), h.src, h.dpt)
 	}

@@ -18,5 +18,5 @@ config:
   watch_outbound: [4444, 1080, 25, 3333, 5555, 7777, 14444]
   # Hits are read from the kernel log (/dev/kmsg). The rules log every packet,
   # so after alerting, a tripwire stays quiet this long for the same remote
-  # address and port. Outbound hits are CONTACT, inbound hits MOVEMENT.
+  # address and port. Every hit, inbound or outbound, is CONTACT.
   alert_cooldown: 5m
