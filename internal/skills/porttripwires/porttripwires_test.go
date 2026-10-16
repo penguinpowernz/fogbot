@@ -57,8 +57,24 @@ func (f *fakeIptables) run(args ...string) ([]byte, error) {
 	return nil, fmt.Errorf("unsupported op %s", op)
 }
 
+// add installs a tripwire rule as the current version writes it
 func (f *fakeIptables) add(chain, ports, prefix string) {
+	args, _ := shellquote.Split(rule("-A", chain, ports, prefix))
+	f.rules[chain] = append(f.rules[chain], args[3:])
+}
+
+// addLegacy installs a rule as versions before SYN-only logging wrote it
+func (f *fakeIptables) addLegacy(chain, ports, prefix string) {
 	f.rules[chain] = append(f.rules[chain], []string{"-p", "tcp", "-m", "multiport", "--dports", ports, "-j", "LOG", "--log-prefix", prefix})
+}
+
+// rule returns the iptables command for a tripwire rule, as iptables -S prints it
+func rule(op, chain, ports, prefix string) string {
+	cmd := fmt.Sprintf("iptables %s %s -p tcp -m multiport --dports %s -m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20 -j LOG --log-prefix '%s'", op, chain, ports, prefix)
+	if chain == "OUTPUT" {
+		cmd += " --log-uid"
+	}
+	return cmd
 }
 
 // apply runs commands the way the enabler does
@@ -122,10 +138,9 @@ func TestFreshSystemAddsBothRules(t *testing.T) {
 	if configured(t, p) {
 		t.Fatal("empty ruleset reported as configured")
 	}
-	// Unchanged from before, so commands approved by earlier versions still match
 	want := []string{
-		"iptables -A INPUT -p tcp -m multiport --dports 135,445 -j LOG --log-prefix 'fw-510-in: '",
-		"iptables -A OUTPUT -p tcp -m multiport --dports 4444 -j LOG --log-prefix 'fw-510-out: '",
+		rule("-A", "INPUT", "135,445", "fw-510-in: "),
+		rule("-A", "OUTPUT", "4444", "fw-510-out: "),
 	}
 	if got := commands(t, p); !equalArgs(got, want) {
 		t.Fatalf("commands:\n got %q\nwant %q", got, want)
@@ -152,8 +167,8 @@ func TestChangedPortListReplacesRule(t *testing.T) {
 		t.Fatal("changed inbound port list reported as configured")
 	}
 	want := []string{
-		"iptables -D INPUT -p tcp -m multiport --dports 135 -j LOG --log-prefix 'fw-510-in: '",
-		"iptables -A INPUT -p tcp -m multiport --dports 135,445 -j LOG --log-prefix 'fw-510-in: '",
+		rule("-D", "INPUT", "135", "fw-510-in: "),
+		rule("-A", "INPUT", "135,445", "fw-510-in: "),
 	}
 	if got := commands(t, p); !equalArgs(got, want) {
 		t.Fatalf("commands:\n got %q\nwant %q", got, want)
@@ -165,6 +180,31 @@ func TestChangedPortListReplacesRule(t *testing.T) {
 	}
 	if n := len(f.rules["INPUT"]); n != 1 {
 		t.Fatalf("expected 1 INPUT rule, got %d: %v", n, f.rules["INPUT"])
+	}
+}
+
+// Rules from before SYN-only logging logged every packet; they are replaced
+func TestLegacyRuleIsReplaced(t *testing.T) {
+	f := newFake()
+	f.addLegacy("INPUT", "135", "fw-510-in: ")
+	f.addLegacy("OUTPUT", "4444", "fw-510-out: ")
+	p := newSkill(f, []interface{}{135}, []interface{}{4444})
+
+	if configured(t, p) {
+		t.Fatal("legacy rules reported as configured")
+	}
+	want := []string{
+		"iptables -D INPUT -p tcp -m multiport --dports 135 -j LOG --log-prefix 'fw-510-in: '",
+		rule("-A", "INPUT", "135", "fw-510-in: "),
+		"iptables -D OUTPUT -p tcp -m multiport --dports 4444 -j LOG --log-prefix 'fw-510-out: '",
+		rule("-A", "OUTPUT", "4444", "fw-510-out: "),
+	}
+	if got := commands(t, p); !equalArgs(got, want) {
+		t.Fatalf("commands:\n got %q\nwant %q", got, want)
+	}
+	f.apply(t, p)
+	if !configured(t, p) || len(f.rules["INPUT"]) != 1 || len(f.rules["OUTPUT"]) != 1 {
+		t.Fatalf("expected one current rule per chain, got %v", f.rules)
 	}
 }
 
@@ -189,7 +229,7 @@ func TestDuplicateRuleIsRemovedNotReadded(t *testing.T) {
 	f.add("INPUT", "135", "fw-510-in: ")
 	p := newSkill(f, []interface{}{135}, nil)
 
-	want := []string{"iptables -D INPUT -p tcp -m multiport --dports 135 -j LOG --log-prefix 'fw-510-in: '"}
+	want := []string{rule("-D", "INPUT", "135", "fw-510-in: ")}
 	if got := commands(t, p); !equalArgs(got, want) {
 		t.Fatalf("commands:\n got %q\nwant %q", got, want)
 	}

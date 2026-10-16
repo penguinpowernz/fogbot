@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"os/user"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,8 +22,8 @@ import (
 const defaultKmsgPath = "/dev/kmsg"
 
 // defaultCooldown is how long a tripwire stays quiet after alerting for the
-// same remote address and port. The LOG rules match every packet, not just
-// the first, so one connection logs many lines.
+// same remote address and port. The LOG rules only match SYNs, but a client
+// retries its SYN several times when nothing answers.
 const defaultCooldown = 5 * time.Minute
 
 // maxTracked bounds the cooldown table, so a scan from many addresses can't
@@ -38,6 +39,7 @@ type hit struct {
 	spt      string
 	dpt      string
 	iface    string
+	uid      string // owner of the local socket, outbound only
 }
 
 // remote is the address on the other end of the connection
@@ -218,6 +220,10 @@ func (p *PortTripwires) parseRecord(rec string) (hit, bool) {
 			h.spt = value
 		case "DPT":
 			h.dpt = value
+		case "UID":
+			if _, err := strconv.ParseUint(value, 10, 32); err == nil {
+				h.uid = value
+			}
 		}
 	}
 
@@ -262,9 +268,23 @@ func (p *PortTripwires) alertFor(h hit, now time.Time) notifier.Alert {
 	if h.tripwire.direction == "out" {
 		alert.Title = "Outbound Connection to Tripwire Port"
 		alert.Activity = fmt.Sprintf("Outbound %s to %s port %s", strings.ToUpper(h.proto), h.dst, h.dpt)
+		if h.uid != "" {
+			who := userName(h.uid)
+			alert.Activity += " by " + who
+			alert.Unit = fmt.Sprintf("%s src=%s:%s dst=%s:%s", who, h.src, h.spt, h.dst, h.dpt)
+			alert.Metadata["uid"] = h.uid
+		}
 	} else {
 		alert.Title = "Inbound Connection to Tripwire Port"
 		alert.Activity = fmt.Sprintf("Inbound %s from %s to port %s", strings.ToUpper(h.proto), h.src, h.dpt)
 	}
 	return alert
+}
+
+// userName describes a UID as "name (uid=N)", or "uid=N" if it has no account
+func userName(uid string) string {
+	if u, err := user.LookupId(uid); err == nil {
+		return fmt.Sprintf("%s (uid=%s)", u.Username, uid)
+	}
+	return "uid=" + uid
 }

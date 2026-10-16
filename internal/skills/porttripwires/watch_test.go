@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 
 const (
 	inboundRec  = "4,1201,5678901,-;fw-510-in: IN=eth0 OUT= MAC=52:54:00:12:34:56 SRC=203.0.113.9 DST=192.0.2.1 LEN=60 TOS=0x00 PREC=0x00 TTL=52 ID=0 DF PROTO=TCP SPT=51234 DPT=445 WINDOW=64240 RES=0x00 SYN URGP=0 \n SUBSYSTEM=net\n"
-	outboundRec = "4,1202,5678902,-;fw-510-out: IN= OUT=eth0 SRC=192.0.2.1 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF PROTO=TCP SPT=40000 DPT=4444 WINDOW=64240 RES=0x00 SYN URGP=0 \n"
+	outboundRec = "4,1202,5678902,-;fw-510-out: IN= OUT=eth0 SRC=192.0.2.1 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF PROTO=TCP SPT=40000 DPT=4444 WINDOW=64240 RES=0x00 SYN URGP=0 UID=0 GID=0 \n"
 )
 
 func TestParseRecord(t *testing.T) {
@@ -94,6 +95,16 @@ func TestRun_AlertsAndSeverity(t *testing.T) {
 	}
 	if out.Severity != notifier.SeverityContact || !out.Acknowledge || out.Location != "port 4444/tcp" {
 		t.Errorf("bad outbound alert: %+v", out)
+	}
+	// --log-uid names the user whose process connected out
+	if !strings.Contains(out.Activity, "by root (uid=0)") || out.Metadata["uid"] != "0" {
+		t.Errorf("outbound alert doesn't name the user: %+v", out)
+	}
+}
+
+func TestUserName_UnknownUID(t *testing.T) {
+	if got := userName("4294967294"); got != "uid=4294967294" {
+		t.Errorf("got %q", got)
 	}
 }
 

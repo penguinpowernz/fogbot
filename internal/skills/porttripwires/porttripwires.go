@@ -108,11 +108,31 @@ type tripwire struct {
 	chain     string
 	configKey string
 	label     string
+	logUID    bool // log the UID of the local socket owner
 }
 
 var tripwires = []tripwire{
-	{"in", "INPUT", "watch_inbound", "inbound"},
-	{"out", "OUTPUT", "watch_outbound", "outbound"},
+	{"in", "INPUT", "watch_inbound", "inbound", false},
+	// Outbound packets come from a local socket, so the kernel can say whose
+	{"out", "OUTPUT", "watch_outbound", "outbound", true},
+}
+
+// ruleMatch narrows each LOG rule to new TCP connections: only the SYN that
+// opens one is logged, not every packet of it, so an established C2 session
+// doesn't flood the kernel log. The limit match caps logging at a burst of 20
+// then one a second, enough for a scan of every watched port. It is written
+// the way iptables -S prints it (--syn is shown as these --tcp-flags), so the
+// rule can be matched exactly against the live ruleset.
+const ruleMatch = "-m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20"
+
+// ruleCommand returns the iptables command that adds tw's LOG rule for ports
+func (tw tripwire) ruleCommand(ports, ruleID string) string {
+	cmd := fmt.Sprintf("iptables -A %s -p tcp -m multiport --dports %s %s -j LOG --log-prefix '%s: '",
+		tw.chain, ports, ruleMatch, ruleID)
+	if tw.logUID {
+		cmd += " --log-uid"
+	}
+	return cmd
 }
 
 // queryError marks a failure to read the current iptables rules, as opposed to
@@ -166,13 +186,10 @@ func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills
 		var want []string // the rule as iptables -S prints it
 		if len(ports) > 0 {
 			portList := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ports)), ","), "[]")
-			cmd := fmt.Sprintf(
-				"iptables -A %s -p tcp -m multiport --dports %s -j LOG --log-prefix '%s: '",
-				tw.chain, portList, ruleID,
-			)
+			cmd := tw.ruleCommand(portList, ruleID)
 			add = &skills.SystemCommand{
 				Command:     cmd,
-				Description: fmt.Sprintf("Monitor %s traffic on ports: %s", tw.label, portList),
+				Description: fmt.Sprintf("Log new %s TCP connections on ports: %s", tw.label, portList),
 				Metadata: map[string]string{
 					"rule_id":   ruleID,
 					"direction": tw.direction,
