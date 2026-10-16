@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -141,10 +140,29 @@ func (s *State) AuthorizedChatID() string {
 func (s *State) Authorize(chatID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.authorizeLocked(chatID)
+}
+
+// RedeemCode authorizes chatID if it sent /start and code is the current
+// pairing code. The check and the authorization happen under one lock, so two
+// chats racing with the same code can't both be told they paired.
+func (s *State) RedeemCode(chatID, code string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, pending := s.pendingAuth[chatID]; !pending || !s.codeMatchesLocked(code) {
+		return false, nil
+	}
+	return true, s.authorizeLocked(chatID)
+}
+
+// authorizeLocked marks a chat as authorized. Caller must hold mu.
+func (s *State) authorizeLocked(chatID string) error {
 	s.AuthorizedChat = chatID
 	s.AuthorizedAt = time.Now()
 	s.CodeUsed = true
 	s.Code = "" // burn the code
+	// Other chats that sent /start can't pair any more
+	s.pendingAuth = make(map[string]time.Time)
 	return s.saveLocked()
 }
 
@@ -159,7 +177,12 @@ func (s *State) GetCode() string {
 func (s *State) VerifyCode(code string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.codeMatchesLocked(code)
+}
 
+// codeMatchesLocked reports whether code is the current, unused pairing code.
+// Caller must hold mu.
+func (s *State) codeMatchesLocked(code string) bool {
 	// Already authorized
 	if s.AuthorizedChat != "" {
 		return false
@@ -206,12 +229,16 @@ func (s *State) Deauthorize() error {
 	return s.saveLocked()
 }
 
-// GenerateNewCode creates and stores a new auth code
-func (s *State) GenerateNewCode() string {
+// CodeForStart returns the auth code to pair with after /start: the current
+// unused code if there is one, otherwise a new one. Reusing it means a stranger
+// sending /start can't invalidate the code the operator is copying from the logs.
+func (s *State) CodeForStart() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Code = generateCode()
-	s.CodeUsed = false
+	if s.Code == "" || s.CodeUsed {
+		s.Code = generateCode()
+		s.CodeUsed = false
+	}
 	return s.Code
 }
 
@@ -219,15 +246,9 @@ func (s *State) GenerateNewCode() string {
 func generateCode() string {
 	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no ambiguous chars
 	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand failure is extremely rare but fatal
-		// Log and use a fallback (time-based entropy is weak but better than crashing)
-		log.Printf("CRITICAL: crypto/rand.Read failed: %v - using fallback", err)
-		// Use time-based fallback (not cryptographically secure but avoids crash)
-		for i := range buf {
-			buf[i] = byte(time.Now().UnixNano() >> (i * 8))
-		}
-	}
+	// crypto/rand.Read never returns an error; it crashes the program rather
+	// than hand out predictable bytes
+	rand.Read(buf)
 
 	code := make([]byte, 8)
 	for i := 0; i < 8; i++ {

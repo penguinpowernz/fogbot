@@ -150,3 +150,174 @@ func TestReloadResult_String(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// dyingSkill's watcher stops on its own as soon as die is closed, like a tail
+// whose log became unreadable
+type dyingSkill struct {
+	stubSkill
+	die chan struct{}
+}
+
+func (s *dyingSkill) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
+	ch := make(chan notifier.Alert)
+	die := s.die
+	go func() {
+		select {
+		case <-die:
+		case <-ctx.Done():
+		}
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func waitAlert(t *testing.T, bus <-chan notifier.Alert) notifier.Alert {
+	t.Helper()
+	select {
+	case a := <-bus:
+		return a
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an alert")
+	}
+	return notifier.Alert{}
+}
+
+// The bug: a watcher that exited by itself left its skill listed as running,
+// with no alert, so a blind sensor looked healthy in /status
+func TestSkillManager_DeadWatcherAlertsAndRestartsOnReload(t *testing.T) {
+	a := &dyingSkill{stubSkill: stubSkill{id: 1, name: "a"}, die: make(chan struct{})}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+	close(a.die)
+
+	if alert := waitAlert(t, bus); alert.Title != "[DEADMAN] Sensor Stopped" || alert.Severity != notifier.SeverityContact {
+		t.Fatalf("unexpected alert %+v", alert)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(m.runningNames()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("dead watcher still listed as running: %v", m.runningNames())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	a.die = make(chan struct{})
+	if res := m.apply([]skills.SkillConfig{cfg(1, nil)}); len(res.started) != 1 {
+		t.Fatalf("reload should start the dead skill again, got %s", res)
+	}
+	if got := m.runningNames(); len(got) != 1 {
+		t.Fatalf("expected a running again, got %v", got)
+	}
+}
+
+func TestSkillManager_StoppedWatcherDoesNotAlert(t *testing.T) {
+	a := &stubSkill{id: 1, name: "a"}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+	m.apply(nil)
+	select {
+	case alert := <-bus:
+		t.Fatalf("disabling a skill raised %+v", alert)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// stateSkill reports its system config as present or not
+type stateSkill struct {
+	stubSkill
+	configured bool
+}
+
+func (s *stateSkill) CheckSystemState() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.configured, nil
+}
+
+func (s *stateSkill) setConfigured(c bool) { s.mu.Lock(); s.configured = c; s.mu.Unlock() }
+
+// The bug: restarting auditd deletes rules added with auditctl, and the skills
+// relying on them went blind until fogbot itself restarted
+func TestSkillManager_StateCheckRestoresMissingConfig(t *testing.T) {
+	a := &stateSkill{stubSkill: stubSkill{id: 1, name: "a"}, configured: true}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+
+	repairs := 0
+	var repairErr error
+	m.repair = func(skills.Skill) error {
+		repairs++
+		if repairErr == nil {
+			a.setConfigured(true)
+		}
+		return repairErr
+	}
+
+	m.checkSystemState()
+	if repairs != 0 || len(bus) != 0 {
+		t.Fatalf("configured skill was repaired (%d) or alerted (%d)", repairs, len(bus))
+	}
+
+	// Rules removed: put back, with a heads-up
+	a.setConfigured(false)
+	m.checkSystemState()
+	if alert := waitAlert(t, bus); repairs != 1 || alert.Title != "System Config Restored" || alert.Severity != notifier.SeverityMovement {
+		t.Fatalf("repairs=%d alert=%+v", repairs, alert)
+	}
+
+	// Removed again later: a new event, so a new alert
+	a.setConfigured(false)
+	m.checkSystemState()
+	if alert := waitAlert(t, bus); alert.Title != "System Config Restored" {
+		t.Fatalf("second removal: unexpected alert %+v", alert)
+	}
+
+	// Can't be restored: CONTACT once, retried quietly after that
+	repairErr = context.DeadlineExceeded
+	a.setConfigured(false)
+	m.checkSystemState()
+	if alert := waitAlert(t, bus); alert.Title != "System Config Missing" || alert.Severity != notifier.SeverityContact {
+		t.Fatalf("unexpected alert %+v", alert)
+	}
+	m.checkSystemState()
+	if len(bus) != 0 || repairs != 4 {
+		t.Fatalf("expected a quiet retry, got %d alerts and %d repairs", len(bus), repairs)
+	}
+}
+
+func TestSkillManager_StateCheckDoesNotRepeatStartupRepairAlert(t *testing.T) {
+	a := &stateSkill{stubSkill: stubSkill{id: 1, name: "a"}}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+	m.repair = func(skills.Skill) error { return context.DeadlineExceeded }
+
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+	if alert := waitAlert(t, bus); alert.Title != "Startup Repair Failed" {
+		t.Fatalf("unexpected alert %+v", alert)
+	}
+	m.checkSystemState()
+	if len(bus) != 0 {
+		t.Fatalf("state check repeated the startup repair alert: %+v", <-bus)
+	}
+}

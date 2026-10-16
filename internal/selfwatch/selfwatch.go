@@ -19,6 +19,7 @@ type SelfWatch struct {
 	binaryPath string
 	configPath string
 	stateDir   string
+	skillDirs  []string // skills-available and skills-enabled
 	watcher    *fsnotify.Watcher
 }
 
@@ -79,6 +80,17 @@ func New(binaryPath, configPath, stateDir string) (*SelfWatch, error) {
 	}, nil
 }
 
+// WatchSkillDirs adds the skill directories to what Watch monitors. Call it
+// before Watch. The skill YAMLs decide what fogbot watches, so editing one or
+// removing a skills-enabled link (then sending SIGHUP) quietly blinds a sensor.
+func (s *SelfWatch) WatchSkillDirs(dirs ...string) {
+	for _, dir := range dirs {
+		if dir != "" {
+			s.skillDirs = append(s.skillDirs, filepath.Clean(dir))
+		}
+	}
+}
+
 // Watch starts monitoring fogbot's own files
 func (s *SelfWatch) Watch(ctx context.Context, hostname string) (<-chan notifier.Alert, error) {
 	alertChan := make(chan notifier.Alert, 10)
@@ -137,7 +149,28 @@ func (s *SelfWatch) addWatches() error {
 		}
 	}
 
+	for _, dir := range s.skillDirs {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if err := s.watcher.Add(dir); err != nil {
+			log.Printf("[selfwatch] Failed to watch skill dir %s: %v", dir, err)
+		} else {
+			log.Printf("[selfwatch] Watching skill dir: %s", dir)
+		}
+	}
+
 	return nil
+}
+
+// isSkillDir reports whether dir is one of the skill directories
+func (s *SelfWatch) isSkillDir(dir string) bool {
+	for _, d := range s.skillDirs {
+		if d == dir {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert, hostname string) {
@@ -225,6 +258,14 @@ func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Al
 		return notifier.Alert{}, false
 	}
 
+	// Only skill YAMLs are loaded from the skill dirs; an editor's swap and
+	// backup files there aren't worth an alert each
+	dir := filepath.Dir(filepath.Clean(event.Name))
+	inSkillDir := s.isSkillDir(dir)
+	if inSkillDir && filepath.Ext(event.Name) != ".yaml" {
+		return notifier.Alert{}, false
+	}
+
 	name := filepath.Base(event.Name)
 	alert := notifier.Alert{
 		Severity:    notifier.SeverityContact,
@@ -253,6 +294,14 @@ func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Al
 			alert.Severity = notifier.SeverityContact
 			alert.Acknowledge = true
 		}
+	}
+
+	if inSkillDir {
+		alert.Severity = notifier.SeverityMovement
+		alert.Title = "fogbot Skill Config Changed"
+		alert.Activity = fmt.Sprintf("Skill file %s %s", name, verb)
+		alert.Unit = "expected only after editing skills or running: fogbot skill enable/disable"
+		alert.Acknowledge = false
 	}
 
 	log.Printf("[selfwatch] %s: %s", alert.Title, alert.Activity)

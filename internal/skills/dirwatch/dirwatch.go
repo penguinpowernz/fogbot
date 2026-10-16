@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -47,12 +46,19 @@ func New() *DirWatch {
 func NewFromConfig(cfg skills.SkillConfig) *DirWatch {
 	d := New()
 	if cfg.Config != nil {
+		// The enabler deduces commands from Config(), so it must be set too
+		d.config = cfg.Config
 		d.applyConfig(cfg.Config)
 	}
 	return d
 }
 
 func (d *DirWatch) applyConfig(cfg map[string]interface{}) {
+	// Options removed from the config on reload go back to their defaults
+	d.recursive = false
+	d.globFilter = ""
+	d.whitelist = make(map[string]bool)
+
 	if paths, ok := cfg["watch_paths"].([]interface{}); ok {
 		d.watchPaths = make([]string, 0, len(paths))
 		for _, p := range paths {
@@ -196,10 +202,9 @@ func (d *DirWatch) CheckSystemState() (bool, error) {
 	// Check if all expected paths are monitored with our rule key
 	// Each rule should be on its own line
 	for _, path := range watchPaths {
-		// Look for lines like: -w /usr/local/bin/ -p wa -k fb-dir-540
-		// Match the exact rule pattern to avoid false positives
-		rulePattern := fmt.Sprintf("-w %s -p wa -k %s", path, ruleKey)
-		if !strings.Contains(rulesOutput, rulePattern) {
+		// auditctl lists "-w /usr/local/bin/ -p wa" as "-w /usr/local/bin -p wa",
+		// so the configured path can't be searched for as written
+		if !skills.AuditWatchListed(rulesOutput, path, "wa", ruleKey) {
 			return false, nil
 		}
 	}

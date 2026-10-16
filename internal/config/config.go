@@ -64,6 +64,9 @@ type Config struct {
 	Dedup struct {
 		Window   time.Duration `yaml:"window"`
 		MaxBurst int           `yaml:"max_burst"`
+		// ContactBurst is how many CONTACT alerts of one kind are sent per
+		// window before the rest are held for a digest
+		ContactBurst int `yaml:"contact_burst"`
 	} `yaml:"dedup"`
 
 	StateDir string `yaml:"state_dir"`
@@ -117,6 +120,10 @@ func (c *Config) applyDefaults() {
 
 	if c.Dedup.MaxBurst == 0 {
 		c.Dedup.MaxBurst = 10
+	}
+
+	if c.Dedup.ContactBurst == 0 {
+		c.Dedup.ContactBurst = 20
 	}
 
 	if c.StatusReport.Schedule == "" {

@@ -21,7 +21,11 @@ Immediate, single event requiring attention:
 - Shell spawned from web server
 - Root login detected
 
-**Behavior:** Sent immediately, always fires regardless of quiet hours
+**Behavior:** Sent immediately, always fires regardless of quiet hours. To
+keep a flood (e.g. a spoofed SYN flood to tripwire ports) from swamping the
+chat, only the first `contact_burst` alerts of each kind (skill + title) per
+window are sent at once; the rest are summarised in one CONTACT digest when
+the window ends.
 
 ### 🟡 MOVEMENT (Yellow)
 Rate-limited digest of multiple related events:
@@ -118,6 +122,7 @@ Prevents alert storms by rate-limiting similar alerts.
 dedup:
   window: 300s      # Suppress duplicate alerts for 5 minutes
   max_burst: 10     # Max alerts per sensor per window
+  contact_burst: 20 # CONTACT alerts of one kind sent at once per window
 ```
 
 ### Behavior

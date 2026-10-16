@@ -1,17 +1,18 @@
 package porttripwires
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kballard/go-shellquote"
 
-	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
 
@@ -27,8 +28,18 @@ type PortTripwires struct {
 	config          map[string]interface{}
 	severityDefault string
 
-	// iptables runs the iptables command; nil means the real one
+	// iptables runs iptables or ip6tables; nil means the real ones
 	iptables iptablesRunner
+
+	// ipv6 reports whether the host has IPv6; nil means check the kernel
+	ipv6 func() bool
+
+	// cooldown is how long a tripwire stays quiet after alerting for the same
+	// remote address and port
+	cooldown time.Duration
+
+	// kmsgPath is the kernel log device the LOG rules write to
+	kmsgPath string
 }
 
 // New creates a new PortTripwires skill from config
@@ -36,9 +47,10 @@ type PortTripwires struct {
 // Configure() will be called later with the actual YAML config.
 func NewDefault() *PortTripwires {
 	return &PortTripwires{
-		id:     510,
-		name:   "port-tripwires",
-		config: map[string]interface{}{},
+		id:       510,
+		name:     "port-tripwires",
+		config:   map[string]interface{}{},
+		cooldown: defaultCooldown,
 	}
 }
 
@@ -53,6 +65,7 @@ func New(cfg skills.SkillConfig) *PortTripwires {
 		config:          cfg.Config,
 		severityDefault: cfg.SeverityDefault,
 		enabled:         false,
+		cooldown:        defaultCooldown,
 	}
 }
 
@@ -70,6 +83,14 @@ func (p *PortTripwires) SetupHints() []string              { return nil }
 
 func (p *PortTripwires) Configure(cfg map[string]interface{}) error {
 	p.config = cfg
+	p.cooldown = defaultCooldown
+	if s, ok := cfg["alert_cooldown"].(string); ok {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < 0 {
+			return fmt.Errorf("invalid alert_cooldown %q", s)
+		}
+		p.cooldown = d
+	}
 	return nil
 }
 
@@ -79,24 +100,106 @@ func (p *PortTripwires) generateRuleID(direction string) string {
 	return fmt.Sprintf("fw-%d-%s", p.id, direction)
 }
 
-// iptablesRunner runs iptables with args and returns its stdout
-type iptablesRunner func(args ...string) ([]byte, error)
+// iptablesRunner runs tool (iptables or ip6tables) with args and returns its stdout
+type iptablesRunner func(tool string, args ...string) ([]byte, error)
 
-func runIptables(args ...string) ([]byte, error) {
-	return exec.Command("iptables", args...).Output()
+func runIptables(tool string, args ...string) ([]byte, error) {
+	return exec.Command(tool, args...).Output()
 }
 
-// tripwire describes the LOG rule for one traffic direction
+// families are the address families the tripwires cover, by the tool that
+// manages each one's rules. iptables only sees IPv4, and IPv6 link-local
+// addresses are up on every LAN interface whether or not the network hands out
+// IPv6 addresses, so without ip6tables rules a connection to fe80::... would
+// reach the watched ports unseen.
+var families = []string{"iptables", "ip6tables"}
+
+// families returns the tools whose rules the tripwires need on this host
+func (p *PortTripwires) families() []string {
+	ipv6 := p.ipv6
+	if ipv6 == nil {
+		ipv6 = hostHasIPv6
+	}
+	if ipv6() {
+		return families
+	}
+	return families[:1]
+}
+
+// hostHasIPv6 reports whether the kernel has IPv6 (it is absent when booted
+// with ipv6.disable=1), in which case there are no ip6tables to configure
+func hostHasIPv6() bool {
+	_, err := os.Stat("/proc/net/if_inet6")
+	return err == nil
+}
+
+// chainRef names a chain in an iptables table
+type chainRef struct {
+	table string
+	chain string
+}
+
+func (c chainRef) String() string { return c.table + " " + c.chain }
+
+// tripwire describes the LOG rule for one traffic direction.
+//
+// The rules live in the raw table. Firewall managers such as ufw own the
+// filter table: ufw puts its chains at the head of INPUT, and they drop
+// 137-139 and 445 and accept allowed ports before a rule appended to INPUT is
+// ever reached, which blinded the tripwire to the very ports it watches. When
+// ufw manages the built-in chains it also flushes the filter, mangle and nat
+// tables on reload. It never touches raw, which every packet passes through
+// before filter. A LOG rule there sees each connection attempt whatever ufw
+// decides about it, and changes nothing about that decision.
 type tripwire struct {
-	direction string // rule ID suffix
-	chain     string
+	direction string   // rule ID suffix
+	chain     chainRef // where the rule goes
+	legacy    chainRef // where earlier (IPv4-only) versions put it; such rules are removed
 	configKey string
 	label     string
+	match     string // matches ahead of the port list
+	logUID    bool   // log the UID of the local socket owner
 }
 
 var tripwires = []tripwire{
-	{"in", "INPUT", "watch_inbound", "inbound"},
-	{"out", "OUTPUT", "watch_outbound", "outbound"},
+	{
+		direction: "in",
+		chain:     chainRef{"raw", "PREROUTING"},
+		legacy:    chainRef{"filter", "INPUT"},
+		configKey: "watch_inbound",
+		label:     "inbound",
+		// Only traffic to this machine: not loopback (a local client talking to
+		// a local dev server), and not traffic routed through to VMs or containers
+		match: "! -i lo -p tcp -m addrtype --dst-type LOCAL",
+	},
+	{
+		direction: "out",
+		chain:     chainRef{"raw", "OUTPUT"},
+		legacy:    chainRef{"filter", "OUTPUT"},
+		configKey: "watch_outbound",
+		label:     "outbound",
+		match:     "! -o lo -p tcp",
+		// Outbound packets come from a local socket, so the kernel can say whose
+		logUID: true,
+	},
+}
+
+// ruleMatch narrows each LOG rule to new TCP connections: only the SYN that
+// opens one is logged, not every packet of it, so an established C2 session
+// doesn't flood the kernel log. The limit match caps logging at a burst of 20
+// then one a second, enough for a scan of every watched port. Rules are
+// written the way iptables -S prints them (--syn is shown as these
+// --tcp-flags), so they can be matched exactly against the live ruleset.
+const ruleMatch = "-m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20"
+
+// ruleCommand returns the command, run with tool, that adds tw's LOG rule for ports
+func (tw tripwire) ruleCommand(tool, ports, ruleID string) string {
+	cmd := fmt.Sprintf("%s -t %s -A %s %s -m multiport --dports %s %s -j LOG --log-prefix '%s: '",
+		tool, tw.chain.table, tw.chain.chain, tw.match, ports, ruleMatch, ruleID)
+	if tw.logUID {
+		cmd += " --log-uid"
+	}
+	return cmd
 }
 
 // queryError marks a failure to read the current iptables rules, as opposed to
@@ -137,99 +240,177 @@ func (p *PortTripwires) CheckSystemState() (bool, error) {
 // current rules aren't read and only the add commands are returned.
 func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills.SystemCommand, error) {
 	commands := []skills.SystemCommand{}
+	ufw := inspect && p.ufwActive()
 
-	for _, tw := range tripwires {
-		ports, err := extractPorts(cfg, tw.configKey)
-		if err != nil {
-			return nil, fmt.Errorf("invalid %s config: %w", tw.configKey, err)
-		}
-
-		ruleID := p.generateRuleID(tw.direction)
-
-		var add *skills.SystemCommand
-		var want []string // the rule as iptables -S prints it
-		if len(ports) > 0 {
-			portList := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ports)), ","), "[]")
-			cmd := fmt.Sprintf(
-				"iptables -A %s -p tcp -m multiport --dports %s -j LOG --log-prefix '%s: '",
-				tw.chain, portList, ruleID,
-			)
-			add = &skills.SystemCommand{
-				Command:     cmd,
-				Description: fmt.Sprintf("Monitor %s traffic on ports: %s", tw.label, portList),
-				Metadata: map[string]string{
-					"rule_id":   ruleID,
-					"direction": tw.direction,
-					"ports":     portList,
-				},
+	for _, tool := range p.families() {
+		for _, tw := range tripwires {
+			cmds, err := p.planTripwire(cfg, tool, tw, inspect, ufw)
+			if err != nil {
+				return nil, err
 			}
-			want, _ = shellquote.Split(cmd)
-			want = want[1:]
-		}
-
-		var existing [][]string
-		exists := false
-		if inspect {
-			if existing, err = p.tripwireRules(tw.chain, ruleID); err != nil {
-				return nil, queryError{err}
-			}
-			if want != nil {
-				if exists, err = p.ruleExists(want); err != nil {
-					return nil, queryError{err}
-				}
-			}
-		}
-
-		// Keep the rule matching the config, if present; every other rule
-		// carrying this tripwire's ID is left over from an old port list
-		keep := -1
-		if exists {
-			for i, rule := range existing {
-				if equalArgs(rule, want) {
-					keep = i
-					break
-				}
-			}
-			// iptables printed the rule differently from how it was written
-			if keep == -1 && len(existing) == 1 {
-				keep = 0
-			}
-			// Can't tell which copy is current, so remove them all and add it back
-			if keep == -1 {
-				exists = false
-			}
-		}
-
-		for i, rule := range existing {
-			if i == keep {
-				continue
-			}
-			ports := argAfter(rule, "--dports")
-			del := append([]string{"iptables", "-D"}, rule[1:]...)
-			commands = append(commands, skills.SystemCommand{
-				Command:     shellquote.Join(del...),
-				Description: fmt.Sprintf("Remove outdated %s tripwire rule (ports: %s)", tw.label, ports),
-				Metadata: map[string]string{
-					"rule_id":   ruleID,
-					"direction": tw.direction,
-					"ports":     ports,
-					"action":    "remove",
-				},
-			})
-		}
-
-		if add != nil && !exists {
-			commands = append(commands, *add)
+			commands = append(commands, cmds...)
 		}
 	}
 
 	return commands, nil
 }
 
-// tripwireRules returns the rules in chain whose LOG prefix is ruleID, as
-// iptables -S prints them ("-A CHAIN ..."), split into arguments
-func (p *PortTripwires) tripwireRules(chain, ruleID string) ([][]string, error) {
-	out, err := p.run("-S", chain)
+// planTripwire returns the commands reconciling tw's rule in tool's ruleset
+func (p *PortTripwires) planTripwire(cfg map[string]interface{}, tool string, tw tripwire, inspect, ufw bool) ([]skills.SystemCommand, error) {
+	var commands []skills.SystemCommand
+	ipv6 := tool == "ip6tables"
+	label := tw.label
+	if ipv6 {
+		label += " IPv6"
+	}
+
+	ports, err := extractPorts(cfg, tw.configKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s config: %w", tw.configKey, err)
+	}
+
+	ruleID := p.generateRuleID(tw.direction)
+
+	var add *skills.SystemCommand
+	var want []string // the rule as <tool> -S prints it
+	if len(ports) > 0 {
+		portList := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ports)), ","), "[]")
+		cmd := tw.ruleCommand(tool, portList, ruleID)
+		desc := fmt.Sprintf("Log new %s TCP connections on ports: %s", label, portList)
+		if ufw {
+			desc += " (ufw is active: this goes in the raw table, which ufw doesn't manage, so ufw's rules and their order are untouched)"
+		}
+		add = &skills.SystemCommand{
+			Command:     cmd,
+			Description: desc,
+			Metadata: map[string]string{
+				"rule_id":   ruleID,
+				"direction": tw.direction,
+				"family":    tool,
+				"ports":     portList,
+			},
+		}
+		want, _ = shellquote.Split(cmd)
+		want = want[3:] // drop "<tool> -t <table>"
+	}
+
+	var existing, legacy [][]string
+	exists := false
+	if inspect {
+		if existing, err = p.tripwireRules(tool, tw.chain, ruleID); err != nil {
+			return nil, queryError{err}
+		}
+		// Earlier versions only ever wrote IPv4 rules
+		if !ipv6 {
+			if legacy, err = p.tripwireRules(tool, tw.legacy, ruleID); err != nil {
+				return nil, queryError{err}
+			}
+		}
+		if want != nil {
+			if exists, err = p.ruleExists(tool, tw.chain.table, want); err != nil {
+				return nil, queryError{err}
+			}
+		}
+	}
+
+	// Rules where earlier versions put them are always removed: behind
+	// ufw's chains they miss traffic, and the raw rule replaces them
+	for _, rule := range legacy {
+		commands = append(commands, p.removeCommand(tool, tw, tw.legacy, rule,
+			fmt.Sprintf("Remove %s tripwire rule from its old place in %s (ports: %s)", label, tw.legacy, argAfter(rule, "--dports"))))
+	}
+
+	// Keep the rule matching the config, if present; every other rule
+	// carrying this tripwire's ID is left over from an old port list
+	keep := -1
+	if exists {
+		for i, rule := range existing {
+			if equalArgs(rule, want) {
+				keep = i
+				break
+			}
+		}
+		// iptables printed the rule differently from how it was written
+		if keep == -1 && len(existing) == 1 {
+			keep = 0
+		}
+		// Can't tell which copy is current, so remove them all and add it back
+		if keep == -1 {
+			exists = false
+		}
+	}
+
+	for i, rule := range existing {
+		if i == keep {
+			continue
+		}
+		commands = append(commands, p.removeCommand(tool, tw, tw.chain, rule,
+			fmt.Sprintf("Remove outdated %s tripwire rule (ports: %s)", label, argAfter(rule, "--dports"))))
+	}
+
+	if add != nil && !exists {
+		commands = append(commands, *add)
+	}
+
+	return commands, nil
+}
+
+// removeCommand returns the command deleting rule (as tool -S printed it)
+// from ref
+func (p *PortTripwires) removeCommand(tool string, tw tripwire, ref chainRef, rule []string, desc string) skills.SystemCommand {
+	ports := argAfter(rule, "--dports")
+	del := append([]string{tool, "-t", ref.table, "-D"}, rule[1:]...)
+	return skills.SystemCommand{
+		Command:     joinArgs(del),
+		Description: desc,
+		Metadata: map[string]string{
+			"rule_id":   p.generateRuleID(tw.direction),
+			"direction": tw.direction,
+			"family":    tool,
+			"ports":     ports,
+			"action":    "remove",
+		},
+	}
+}
+
+// plainArg matches arguments that need no quoting for shellquote.Split
+var plainArg = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./!-]+$`)
+
+// joinArgs joins args into a command that shellquote.Split turns back into
+// args, quoting only where needed so the approval prompt shows "! -i lo"
+// rather than shellquote.Join's "\! -i lo"
+func joinArgs(args []string) string {
+	words := make([]string, len(args))
+	for i, a := range args {
+		if plainArg.MatchString(a) {
+			words[i] = a
+		} else {
+			words[i] = shellquote.Join(a)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// ufwActive reports whether ufw's rules are loaded. ufw.conf can say
+// ENABLED=yes while ufw isn't running, so the live ruleset is checked for the
+// chains ufw creates.
+func (p *PortTripwires) ufwActive() bool {
+	out, err := p.run("iptables", "-t", "filter", "-S")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "-N ufw-before-input" {
+			return true
+		}
+	}
+	return false
+}
+
+// tripwireRules returns the rules in tool's ref whose LOG prefix is ruleID, as
+// tool -S prints them ("-A CHAIN ..."), split into arguments
+func (p *PortTripwires) tripwireRules(tool string, ref chainRef, ruleID string) ([][]string, error) {
+	out, err := p.run(tool, "-t", ref.table, "-S", ref.chain)
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +431,9 @@ func (p *PortTripwires) tripwireRules(chain, ruleID string) ([][]string, error) 
 	return rules, nil
 }
 
-// ruleExists asks iptables whether rule (starting "-A CHAIN") is present
-func (p *PortTripwires) ruleExists(rule []string) (bool, error) {
-	_, err := p.run(append([]string{"-C"}, rule[1:]...)...)
+// ruleExists asks tool whether rule (starting "-A CHAIN") is present in table
+func (p *PortTripwires) ruleExists(tool, table string, rule []string) (bool, error) {
+	_, err := p.run(tool, append([]string{"-t", table, "-C"}, rule[1:]...)...)
 	if err == nil {
 		return true, nil
 	}
@@ -264,11 +445,11 @@ func (p *PortTripwires) ruleExists(rule []string) (bool, error) {
 	return false, err
 }
 
-func (p *PortTripwires) run(args ...string) ([]byte, error) {
+func (p *PortTripwires) run(tool string, args ...string) ([]byte, error) {
 	if p.iptables == nil {
-		return runIptables(args...)
+		return runIptables(tool, args...)
 	}
-	return p.iptables(args...)
+	return p.iptables(tool, args...)
 }
 
 // argAfter returns the argument following flag, or ""
@@ -291,20 +472,6 @@ func equalArgs(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// Watch monitors system logs for port tripwire alerts
-func (p *PortTripwires) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
-	alerts := make(chan notifier.Alert, 10)
-
-	go func() {
-		defer close(alerts)
-		// TODO: Implement log watching for the generated rule IDs
-		// This will monitor /var/log/kern.log or journalctl for our rule identifiers
-		<-ctx.Done()
-	}()
-
-	return alerts, nil
 }
 
 // extractPorts safely extracts port list from config

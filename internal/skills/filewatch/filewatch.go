@@ -107,12 +107,13 @@ func (f *FileWatch) SetupHints() []string {
 
 	var hints []string
 
+	// Quote everything: the operator is invited to paste these into a root shell
 	if len(rootMissing) > 0 {
-		hints = append(hints, fmt.Sprintf("sudo touch %s", strings.Join(rootMissing, " ")))
+		hints = append(hints, "sudo touch -- "+shellquote.Join(rootMissing...))
 	}
 
 	for user, paths := range homeMissing {
-		hints = append(hints, fmt.Sprintf("sudo -iu %s touch %s", user, strings.Join(paths, " ")))
+		hints = append(hints, fmt.Sprintf("sudo -iu %s touch -- %s", shellquote.Join(user), shellquote.Join(paths...)))
 	}
 
 	return hints
@@ -160,6 +161,12 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("watch path %q must be absolute", path)
 		}
+		if !parentExists(path) {
+			// The kernel refuses the watch, auditctl fails and so would the
+			// whole enable, over one canary such as ~/.bitcoin/wallet.dat
+			log.Printf("[file-watch] Not watching %s: %s doesn't exist", path, filepath.Dir(path))
+			continue
+		}
 
 		commands = append(commands, skills.SystemCommand{
 			// Quote the path: the command is split with shellquote before it
@@ -174,7 +181,19 @@ func (f *FileWatch) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemC
 		})
 	}
 
+	if len(commands) == 0 {
+		return nil, fmt.Errorf("none of the watch_paths can be watched: their parent directories don't exist")
+	}
+
 	return commands, nil
+}
+
+// parentExists reports whether path's directory exists. auditd can watch a
+// file that doesn't exist yet, so canaries can be listed before they are
+// created, but not one whose directory is missing.
+func parentExists(path string) bool {
+	info, err := os.Stat(filepath.Dir(path))
+	return err == nil && info.IsDir()
 }
 
 // CheckSystemState verifies if auditd rules are already configured
@@ -194,9 +213,12 @@ func (f *FileWatch) CheckSystemState() (bool, error) {
 	}
 
 	for path, perms := range watchPaths {
-		// Look for exact match: -w /etc/passwd -p rwa -k fb-file-500
-		rulePattern := fmt.Sprintf("-w %s -p %s -k %s", path, perms, ruleKey)
-		if !strings.Contains(rulesOutput, rulePattern) {
+		// DeduceCommands skips these, so no rule is expected for them
+		if !parentExists(path) {
+			continue
+		}
+		// Look for the rule as auditctl lists it: -w /etc/passwd -p rwa -k fb-file-500
+		if !skills.AuditWatchListed(rulesOutput, path, perms, ruleKey) {
 			return false, nil
 		}
 	}

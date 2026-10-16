@@ -1,7 +1,8 @@
 id: 100
 name: ssh-monitor
 description: >
-  Monitors /var/log/auth.log for SSH authentication events.
+  Monitors the systemd journal's auth messages (what auth.log receives)
+  for SSH authentication events.
   Detects brute force attempts, successful logins from new IPs,
   direct root logins, and sudo/su usage.
 why: >
@@ -12,7 +13,7 @@ why: >
   is a high-value indicator of compromise. Direct root login
   bypasses the sudo audit trail entirely.
 requires:
-  - auth.log read access
+  - systemd journal read access
 tags: [auth, ssh, brute-force]
 severity_default: yellow
 config:
@@ -20,3 +21,8 @@ config:
   brute_force_window: 60s
   alert_new_ip_login: true
   quiet_hours_exempt: false
+  # journal: only believe a message when the journal shows sshd (as root),
+  # sudo or su really sent it. file: read auth_log_path instead, whose lines
+  # any local user can fake with logger(1).
+  log_source: journal
+  # auth_log_path: /var/log/auth.log

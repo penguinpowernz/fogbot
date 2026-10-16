@@ -135,3 +135,36 @@ func TestConfigChmodIsReported(t *testing.T) {
 		t.Fatalf("expected CONTACT tamper alert, got %+v", a)
 	}
 }
+
+func TestSkillDirChangesAreReported(t *testing.T) {
+	available, enabled := t.TempDir(), t.TempDir()
+	skillFile := filepath.Join(available, "510-port-tripwires.yaml")
+	os.WriteFile(skillFile, []byte("id: 510\n"), 0600)
+
+	sw, err := New("", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw.WatchSkillDirs(available, enabled)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ch, err := sw.Watch(ctx, "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Editor droppings aren't skill files
+	os.WriteFile(filepath.Join(available, ".510-port-tripwires.yaml.swp"), []byte("x"), 0600)
+	none(t, ch)
+
+	os.WriteFile(skillFile, []byte("id: 510\nconfig: {}\n"), 0600)
+	if a := next(t, ch); a.Title != "fogbot Skill Config Changed" || a.Severity != notifier.SeverityMovement {
+		t.Fatalf("unexpected alert for edited skill: %+v", a)
+	}
+
+	link := filepath.Join(enabled, "510-port-tripwires.yaml")
+	os.Symlink(skillFile, link)
+	if a := next(t, ch); a.Location != link {
+		t.Fatalf("unexpected alert for enabled skill: %+v", a)
+	}
+}

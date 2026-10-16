@@ -56,26 +56,14 @@ internal/
 │   └── selfwatch.go
 ├── metrics/              # Per-period counters (future)
 └── skills/
+    ├── README.md         # Index of all skills
     ├── skill.go          # Skill interface + SystemCommand
     ├── enabler.go        # Approval workflow, system state checking
     ├── loader.go         # Load YAMLs from skills-enabled/
     ├── base.go           # Helper for legacy skills
-    ├── porttripwires/    # Skill: iptables port monitoring
-    │   └── porttripwires.go
-    ├── sshmonitor/       # Skill: SSH auth log monitoring
-    │   └── sshmonitor.go
-    ├── suidsweep/        # Skill: SUID/SGID detection
-    │   └── suidsweep.go
-    ├── procexec/         # Skill: /proc monitoring
-    │   └── procexec.go
-    ├── pkgmonitor/       # Skill: package changes
-    │   └── pkgmonitor.go
-    ├── logfreshness/     # Skill: deadman log checking
-    │   └── logfreshness.go
-    ├── servicehealth/    # Skill: systemd service health
-    │   └── servicehealth.go
-    └── auditdhealth/     # Skill: auditd health check
-        └── auditdhealth.go
+    └── <skill>/          # One dir per skill, e.g. porttripwires/:
+        ├── README.md        # What, why, config, examples
+        └── porttripwires.go # Implementation (absent if planned)
 ```
 
 ### etc/fogbot/

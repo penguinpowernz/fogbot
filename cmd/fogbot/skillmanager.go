@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,14 @@ import (
 
 // watcherStopTimeout bounds how long a reload waits for a stopped watcher to exit
 const watcherStopTimeout = 10 * time.Second
+
+// stateCheckInterval is how often running skills' system config (audit rules,
+// iptables rules) is checked. It doesn't only go missing across reboots:
+// restarting auditd reloads its rules files, which deletes every rule added
+// with auditctl, and anyone with root can flush the iptables raw table. Until
+// fogbot restarted, those skills would sit there watching for events that
+// could no longer happen.
+const stateCheckInterval = 5 * time.Minute
 
 // skillManager starts and stops skill watchers to match the enabled skill
 // configs, so `fogbot skill enable/disable` followed by SIGHUP takes effect
@@ -31,12 +41,27 @@ type skillManager struct {
 
 	mu      sync.Mutex
 	running map[int]*runningSkill
+
+	// missing tracks skills whose system config was found missing and could
+	// not be restored, so that is alerted once rather than on every check.
+	// Guarded by mu.
+	missing skills.Deadman
 }
 
 type runningSkill struct {
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the watcher's alert channel closes
 	config map[string]interface{}
+}
+
+// exited reports whether the watcher has stopped
+func (r *runningSkill) exited() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // reloadResult lists skill names affected by apply
@@ -81,6 +106,18 @@ func (m *skillManager) apply(configs []skills.SkillConfig) reloadResult {
 	defer m.mu.Unlock()
 
 	var res reloadResult
+
+	// A watcher that died on its own is started again, like a newly enabled skill
+	for id, r := range m.running {
+		if r.exited() {
+			r.cancel()
+			if skill, ok := m.registry.Get(id); ok {
+				skill.SetEnabled(false)
+			}
+			delete(m.running, id)
+		}
+	}
+
 	want := make(map[int]skills.SkillConfig)
 	for _, cfg := range configs {
 		if _, ok := m.registry.Get(cfg.ID); !ok {
@@ -137,7 +174,11 @@ func (m *skillManager) start(skill skills.Skill, cfg skills.SkillConfig) bool {
 	skill.SetEnabled(true)
 
 	if m.repair != nil {
+		key := strconv.Itoa(skill.ID())
+		m.missing.Pass(key)
 		if err := m.repair(skill); err != nil {
+			// Alerted here, so the state check doesn't alert again
+			m.missing.Fail(key)
 			log.Printf("Startup repair failed for skill #%d %s: %v", skill.ID(), skill.Name(), err)
 			m.send(notifier.Alert{
 				Severity:  notifier.SeverityMovement,
@@ -167,6 +208,25 @@ func (m *skillManager) start(skill skills.Skill, cfg skills.SkillConfig) bool {
 	go func() {
 		defer close(r.done)
 		forwardAlerts(m.ctx, alerts, m.bus)
+
+		// The watcher closed its channel without being stopped, e.g. the log
+		// it tails became unreadable or the D-Bus connection dropped. Its
+		// sensor is now blind, which must not go unnoticed.
+		if ctx.Err() == nil {
+			log.Printf("Watcher for skill #%d %s exited unexpectedly", skill.ID(), skill.Name())
+			m.send(notifier.Alert{
+				Severity:    notifier.SeverityContact,
+				SkillID:     skill.ID(),
+				SkillName:   skill.Name(),
+				Title:       "[DEADMAN] Sensor Stopped",
+				Activity:    fmt.Sprintf("The %s watcher stopped unexpectedly and is no longer detecting anything", skill.Name()),
+				Location:    m.hostname,
+				Unit:        "see the fogbot daemon log for the cause; restart it with: systemctl reload fogbot",
+				Time:        time.Now(),
+				Equipment:   "skill-manager",
+				Acknowledge: true,
+			})
+		}
 	}()
 
 	log.Printf("Started watcher for skill #%d: %s", skill.ID(), skill.Name())
@@ -184,6 +244,103 @@ func (m *skillManager) stop(skill skills.Skill, r *runningSkill) {
 	}
 	delete(m.running, skill.ID())
 	log.Printf("Stopped watcher for skill #%d: %s", skill.ID(), skill.Name())
+}
+
+// runningNames returns the names of the skills whose watchers are running
+func (m *skillManager) runningNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, 0, len(m.running))
+	for id, r := range m.running {
+		if r.exited() {
+			continue
+		}
+		if skill, ok := m.registry.Get(id); ok {
+			names = append(names, skill.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// watchSystemState checks the running skills' system config every interval
+// until the daemon stops
+func (m *skillManager) watchSystemState(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.checkSystemState()
+		}
+	}
+}
+
+// checkSystemState restores system config that has gone missing from running
+// skills, using only approved commands, and alerts on each disappearance
+func (m *skillManager) checkSystemState() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ids := make([]int, 0, len(m.running))
+	for id := range m.running {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+
+	for _, id := range ids {
+		if m.running[id].exited() {
+			continue
+		}
+		skill, _ := m.registry.Get(id)
+		key := strconv.Itoa(id)
+
+		configured, err := skill.CheckSystemState()
+		if err != nil {
+			log.Printf("[state-check] Could not check system config for skill #%d %s: %v", id, skill.Name(), err)
+			continue
+		}
+		if configured {
+			m.missing.Pass(key)
+			continue
+		}
+
+		log.Printf("[state-check] System config for skill #%d %s is missing", id, skill.Name())
+		repairErr := errors.New("startup repair is unavailable")
+		if m.repair != nil {
+			repairErr = m.repair(skill)
+		}
+
+		// Restored: a later disappearance is a new event and alerts again.
+		// Not restored: alert once, not on every check, until it is fixed.
+		alert := notifier.Alert{
+			SkillID:     skill.ID(),
+			SkillName:   skill.Name(),
+			Location:    m.hostname,
+			Time:        time.Now(),
+			Equipment:   "state-check",
+			Acknowledge: true,
+		}
+		if repairErr == nil {
+			m.missing.Pass(key)
+			alert.Severity = notifier.SeverityMovement
+			alert.Title = "System Config Restored"
+			alert.Activity = fmt.Sprintf("System config for %s (e.g. audit or iptables rules) disappeared while fogbot was running and was put back", skill.Name())
+			alert.Unit = "expected after restarting auditd; otherwise someone removed fogbot's rules"
+		} else {
+			if !m.missing.Fail(key) {
+				continue
+			}
+			alert.Severity = notifier.SeverityContact
+			alert.Title = "System Config Missing"
+			alert.Activity = fmt.Sprintf("System config for %s disappeared while fogbot was running and could not be restored; the skill can't detect anything", skill.Name())
+			alert.Unit = repairErr.Error()
+		}
+		log.Printf("[state-check] %s: %s", alert.Title, alert.Activity)
+		m.send(alert)
+	}
 }
 
 func (m *skillManager) send(alert notifier.Alert) {

@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[Build & Test Commands](docs/build-and-test.md)** - How to build, test, and run fogbot in Docker
 - **[Skills Architecture](docs/skills-architecture.md)** - **READ THIS FIRST** - Understanding the command deduction and approval workflow
 - **[Adding New Skills](docs/adding-new-skill.md)** - Step-by-step guide to implementing new detection skills
+- **[Skills Index](internal/skills/README.md)** - Every skill, with a README per skill dir
 - **[Directory Structure](docs/directory-structure.md)** - Where everything lives in the codebase
 - **[Alerts & Notifications](docs/alerts-and-notifications.md)** - SALUTE format, Telegram auth, deduplication
 
@@ -94,3 +95,4 @@ docker-compose restart
 3. **Use environment variables** to avoid touching system paths during development
 4. **Follow the approval workflow pattern** for any skill that modifies system state
 5. **Update skill registration** in both `cmd/fogbot/main.go` and `cmd/fogbot/skill.go`
+6. **Give each skill a README** in `internal/skills/<skill>/` (what, why, config, examples), alongside its code; keep it in step with the skill's YAML in `usr/share/fogbot/contrib/skills-available/`

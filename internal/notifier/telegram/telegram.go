@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
@@ -89,8 +90,67 @@ func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
 		params.Set("reply_markup", keyboard)
 	}
 
-	_, err = t.apiCall("sendMessage", params)
+	err = t.sendMessage(ctx, params)
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.status == http.StatusBadRequest {
+		// Telegram rejected the message, most likely its Markdown. Alert fields
+		// come from the watched system, so an attacker who could break the
+		// formatting would otherwise suppress the alert; resend it as plain text.
+		log.Printf("Telegram rejected alert (%v), resending without Markdown", err)
+		params.Del("parse_mode")
+		err = t.sendMessage(ctx, params)
+	}
 	return err
+}
+
+// sendAttempts bounds how many times an alert is tried. Telegram rate limits a
+// bot that sends a burst of messages, and an attacker who can trigger a flood
+// of minor alerts would otherwise get the CONTACT alert that matters dropped,
+// so rate limits, server errors and network failures are retried.
+const sendAttempts = 4
+
+// maxRetryWait caps how long one retry waits, whatever retry_after says
+const maxRetryWait = 60 * time.Second
+
+// retryBackoff is the wait before retrying a server or network error,
+// multiplied by the attempt number. A variable so tests can shorten it.
+var retryBackoff = 2 * time.Second
+
+// sendMessage calls sendMessage, retrying failures that may be temporary
+func (t *Telegram) sendMessage(ctx context.Context, params url.Values) error {
+	for attempt := 1; ; attempt++ {
+		_, err := t.apiCall("sendMessage", params)
+		if err == nil || attempt == sendAttempts {
+			return err
+		}
+		wait, ok := retryDelay(err, attempt)
+		if !ok {
+			return err
+		}
+		log.Printf("Telegram sendMessage failed (%v), retrying in %v", err, wait)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
+// retryDelay reports whether a failed call is worth retrying, and after how long
+func retryDelay(err error, attempt int) (time.Duration, bool) {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.status == http.StatusTooManyRequests:
+			if d := apiErr.retryAfter(); d > 0 {
+				return min(d, maxRetryWait), true
+			}
+		case apiErr.status >= 500:
+		default:
+			return 0, false // the request itself was refused
+		}
+	}
+	return time.Duration(attempt) * retryBackoff, true
 }
 
 // alertChatID returns the chat alerts go to: the chat authorized via /start
@@ -251,6 +311,8 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	}
 
 	verb := strings.TrimPrefix(strings.ToLower(args[0]), "/")
+	// In group chats Telegram sends commands as /status@botname
+	verb, _, _ = strings.Cut(verb, "@")
 
 	return &notifier.Command{
 		Raw:        text,
@@ -267,7 +329,30 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 // from the system, and an unbalanced _ or * makes Telegram reject the message.
 var markdownEscaper = strings.NewReplacer(`_`, `\_`, `*`, `\*`, "`", "\\`", `[`, `\[`)
 
+// maxFieldRunes caps each alert field. Telegram rejects messages over 4096
+// characters, and fields such as a process command line are chosen by whoever
+// is being detected, so an uncapped field could make every alert about them fail.
+const maxFieldRunes = 400
+
+// controlReplacer turns line breaks and tabs into spaces, so a field can't
+// start a new line that looks like another SALUTE field
+var controlReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+
+// escapeMarkdown makes a system-supplied field safe to send: valid UTF-8
+// (Telegram rejects anything else), no control characters, capped in length,
+// and with Markdown entity characters escaped.
 func escapeMarkdown(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = controlReplacer.Replace(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > maxFieldRunes {
+		s = string(r[:maxFieldRunes]) + "…"
+	}
 	return markdownEscaper.Replace(s)
 }
 
@@ -360,10 +445,33 @@ func (t *Telegram) apiCall(method string, params url.Values) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &apiError{status: resp.StatusCode, body: string(body)}
 	}
 
 	return body, nil
+}
+
+// apiError is a non-200 response from the Bot API
+type apiError struct {
+	status int
+	body   string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("api returned status %d: %s", e.status, e.body)
+}
+
+// retryAfter returns how long a 429 response asks the bot to wait, or 0
+func (e *apiError) retryAfter() time.Duration {
+	var resp struct {
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if json.Unmarshal([]byte(e.body), &resp) != nil {
+		return 0
+	}
+	return time.Duration(resp.Parameters.RetryAfter) * time.Second
 }
 
 // Close shuts down the Telegram notifier

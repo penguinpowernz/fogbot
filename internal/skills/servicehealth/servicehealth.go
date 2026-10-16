@@ -83,7 +83,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 	}
 
 	if intervalStr, ok := cfg["poll_interval"].(string); ok {
-		if d, err := time.ParseDuration(intervalStr); err == nil {
+		if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 { // time.NewTicker panics on d <= 0
 			s.checkInterval = d
 		}
 	}
@@ -127,7 +127,8 @@ func (s *ServiceHealth) checkServices(alertChan chan<- notifier.Alert) {
 
 	for _, service := range services {
 		// Use systemctl is-active to check service status
-		cmd := exec.Command("systemctl", "is-active", service)
+		// "--" so a service name from the config can't be read as an option
+		cmd := exec.Command("systemctl", "is-active", "--", service)
 		output, err := cmd.Output()
 
 		status := strings.TrimSpace(string(output))

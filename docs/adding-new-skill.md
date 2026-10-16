@@ -2,9 +2,12 @@
 
 This guide shows how to add a new skill with the command deduction and approval workflow.
 
+Every skill has its own directory, `internal/skills/<skill>/`, holding its
+README and its code. See [internal/skills/README.md](../internal/skills/README.md).
+
 ## Step 1: Create Skill YAML
 
-Create `etc/fogbot/skills-available/XXX-skillname.yaml` with declarative config only:
+Create `usr/share/fogbot/contrib/skills-available/520-cron-watch.yaml` with declarative config only:
 
 ```yaml
 id: 520
@@ -33,10 +36,29 @@ config:
 
 **Important:**
 - Don't include `commands:` field
-- Set `requires_approval: true` if skill needs to run system commands
+- Set `requires_approval: true` if skill needs to run system commands (informational: the enabler always prompts before running any command `DeduceCommands()` returns)
 - Only include declarative configuration in `config:` section
 
-## Step 2: Implement Skill Package
+## Step 2: Write the README
+
+Create `internal/skills/cronwatch/README.md`, following the existing ones
+(e.g. [port-tripwires](../internal/skills/porttripwires/README.md)):
+
+- **What it's for**: the attacker behaviour it catches and why that matters
+- **How it works**: what it watches, any system commands it needs approved, and
+  a table of the alerts it raises with their severity
+- **Requirements**
+- **Configuration**: where the YAML lives, the shipped `config:` block, and a
+  table of every key with its default
+- **Examples**: config for real situations, especially tripwire and canary uses
+  ("watch port 3389 even if you don't run RDP")
+- **Enabling**: the `fogbot skill enable` command
+
+The directory is the skill's name without dashes (`cron-watch` → `cronwatch`).
+Add the skill to the table in `internal/skills/README.md`. `layout_test.go`
+fails if a shipped skill has no README.
+
+## Step 3: Implement Skill Package
 
 Create `internal/skills/cronwatch/cronwatch.go`:
 
@@ -117,7 +139,7 @@ func (c *CronWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 }
 ```
 
-## Step 3: Register Skill in Daemon
+## Step 4: Register Skill in Daemon
 
 Edit `cmd/fogbot/main.go`:
 
@@ -139,7 +161,11 @@ func runDaemon(cmd *cobra.Command, args []string) {
 }
 ```
 
-## Step 4: Register Skill in CLI
+## Step 5: Register Skill in CLI
+
+Every implemented skill needs a case here, even one that changes nothing on
+the system, or `fogbot skill enable` reports it has no implementation.
+`instantiate_test.go` fails for any skill directory with code but no case.
 
 Edit `cmd/fogbot/skill.go`:
 
@@ -162,7 +188,7 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 }
 ```
 
-## Step 5: Test the Skill
+## Step 6: Test the Skill
 
 ```bash
 # Build with new skill
@@ -174,7 +200,7 @@ docker-compose exec -T fogbot fogbot skill list
 
 # Enable it
 docker-compose exec -T fogbot fogbot skill enable 520
-# No approval needed since requires_approval: false
+# No approval prompt since DeduceCommands() returns no commands
 
 # Check it's enabled
 docker-compose exec -T fogbot fogbot skill list
@@ -225,7 +251,7 @@ func (s *SkillName) CheckSystemState() (bool, error) {
 ## Design Principles
 
 1. **Declarative over imperative** - Skills declare what to watch, not how
-2. **User approval for system changes** - Set `requires_approval: true` and implement `DeduceCommands()`
+2. **User approval for system changes** - Implement `DeduceCommands()`; the enabler always asks before running its commands
 3. **Idempotent configuration** - `CheckSystemState()` should verify config exists
 4. **Non-obvious identifiers** - Use `fw-520` not `CRON-WATCH` in system configs
 5. **Clear explanations** - Write good `why:` field explaining security value

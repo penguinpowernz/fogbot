@@ -30,6 +30,9 @@ status_report:
 dedup:
   window: 300s       # 5 minutes
   max_burst: 10      # max alerts per sensor per window
+  # CONTACT alerts of one kind sent per window; more are summarised in one
+  # digest when the window ends, so a flood can't swamp the chat
+  contact_burst: 20
 
 # State directory (logs, baselines, ledger)
 state_dir: /var/lib/fogbot

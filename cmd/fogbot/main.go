@@ -211,7 +211,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	defer cancel()
 
 	// Initialize dedup engine
-	dedupEngine := dedup.NewEngine(cfg.Dedup.Window, cfg.Dedup.MaxBurst)
+	dedupEngine := dedup.NewEngine(cfg.Dedup.Window, cfg.Dedup.MaxBurst, cfg.Dedup.ContactBurst)
 	defer dedupEngine.Close()
 
 	// Initialize baseline manager
@@ -260,6 +260,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	log.Printf("Skills: %s", skillMgr.apply(enabledSkillConfigs))
+	go skillMgr.watchSystemState(stateCheckInterval)
 
 	// Start selfwatch to monitor fogbot's own files
 	binaryPath, _ := os.Executable()
@@ -267,11 +268,28 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Printf("Failed to create selfwatch: %v", err)
 	} else {
+		sw.WatchSkillDirs(skills.SkillsAvailablePath, skills.SkillsEnabledPath)
 		selfwatchChan, err := sw.Watch(ctx, machineHostname)
 		if err != nil {
 			log.Printf("Failed to start selfwatch: %v", err)
 		} else {
-			go forwardAlerts(ctx, selfwatchChan, alertBus)
+			go func() {
+				forwardAlerts(ctx, selfwatchChan, alertBus)
+				if ctx.Err() == nil {
+					log.Printf("Selfwatch stopped unexpectedly")
+					skillMgr.send(notifier.Alert{
+						Severity:    notifier.SeverityContact,
+						SkillID:     999,
+						SkillName:   "selfwatch",
+						Title:       "[DEADMAN] Sensor Stopped",
+						Activity:    "fogbot is no longer watching its own files for tampering",
+						Unit:        "see the fogbot daemon log for the cause; restart with: systemctl restart fogbot",
+						Time:        time.Now(),
+						Equipment:   "inotify",
+						Acknowledge: true,
+					})
+				}
+			}()
 			log.Printf("Started selfwatch monitoring")
 		}
 	}
@@ -298,7 +316,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			log.Fatalf("Failed to start command handler: %v", err)
 		}
 
-		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname)
+		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname, skillMgr)
 	}
 
 	// Setup signal handling
@@ -320,6 +338,14 @@ func runDaemon(cmd *cobra.Command, args []string) {
 					log.Printf("Config reloaded successfully")
 				}
 
+				// Startup repair must only run what is approved now: pick up
+				// approvals revoked by `fogbot skill disable` since startup
+				if approvalTracker != nil {
+					if err := approvalTracker.Reload(); err != nil {
+						log.Printf("Failed to reload approved commands: %v", err)
+					}
+				}
+
 				configs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
 				if err != nil {
 					log.Printf("Failed to load enabled skills, keeping current watchers: %v", err)
@@ -328,8 +354,14 @@ func runDaemon(cmd *cobra.Command, args []string) {
 				res := skillMgr.apply(configs)
 				log.Printf("Skills reloaded: %s", res)
 				if res.changed() {
+					// A sensor going off is worth a look even when it was the
+					// operator: it is also how an intruder would blind fogbot
+					severity := notifier.SeverityNominal
+					if len(res.stopped)+len(res.failed) > 0 {
+						severity = notifier.SeverityMovement
+					}
 					skillMgr.send(notifier.Alert{
-						Severity:  notifier.SeverityNominal,
+						Severity:  severity,
 						Title:     "fogbot skills reloaded",
 						Activity:  res.String(),
 						Time:      time.Now(),
@@ -367,7 +399,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
+func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string, skillMgr *skillManager) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -399,7 +431,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 
 			case notifier.CmdStatus:
 				if authState.IsAuthorized(cmd.ChatID) {
-					handleStatus(ctx, cmd, machineHostname, notif)
+					handleStatus(ctx, cmd, machineHostname, notif, skillMgr.runningNames())
 				}
 
 			case notifier.CmdApprove:
@@ -413,9 +445,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 					// Check if any part of the message contains a valid auth code
 					for _, word := range cmd.Args {
 						code := strings.ToUpper(word)
-						if auth.ValidateCode(code) && authState.VerifyCode(code) {
-							// Found valid code! Authorize
-							handleAuthCodeReceived(ctx, cmd.ChatID, code, authState, notif)
+						if auth.ValidateCode(code) && handleAuthCodeReceived(ctx, cmd.ChatID, code, authState, notif) {
 							break
 						}
 					}
@@ -450,14 +480,28 @@ func handleStart(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 		return
 	}
 
-	// Generate new auth code
-	code := authState.GenerateNewCode()
+	// Only one chat can be paired. Ignore strangers rather than confirm the bot
+	// guards a host; the operator re-pairs with /reset from the paired chat.
+	if authState.IsAnyoneAuthorized() {
+		log.Printf("Ignoring /start from chat %s: another chat is already authorized", cmd.ChatID)
+		return
+	}
+
+	code := authState.CodeForStart()
 	log.Printf("Authorization code generated for chat %s: %s", cmd.ChatID, code)
 	log.Printf("*** AUTH CODE: %s ***", code)
 
 	// Mark this chat as waiting for auth code
 	authState.MarkPendingAuth(cmd.ChatID)
 	log.Printf("Chat %s marked as pending authorization", cmd.ChatID)
+
+	// "/start FOG-XXXX-XXXX" pairs straight away, as the help text's format
+	// suggests, rather than ignoring the code and asking for it again
+	for _, word := range cmd.Args[1:] {
+		if c := strings.ToUpper(word); auth.ValidateCode(c) && handleAuthCodeReceived(ctx, cmd.ChatID, c, authState, notif) {
+			return
+		}
+	}
 
 	// Send instructions
 	sendSimpleMessage(ctx, notif, cmd.ChatID, "🔐 *Authorization Required*\n\n"+
@@ -467,14 +511,18 @@ func handleStart(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 		"Type /help for more information.")
 }
 
-func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState *auth.State, notif notifier.Notifier) {
+// handleAuthCodeReceived pairs the chat if code is the current pairing code,
+// and reports whether it was
+func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState *auth.State, notif notifier.Notifier) bool {
+	ok, err := authState.RedeemCode(chatID, code)
+	if !ok {
+		return false
+	}
 	log.Printf("Valid auth code received from chat %s", chatID)
-
-	// Authorize the chat
-	if err := authState.Authorize(chatID); err != nil {
+	if err != nil {
 		log.Printf("Failed to authorize %s: %v", chatID, err)
 		sendSimpleMessage(ctx, notif, chatID, "❌ Authorization failed. Please try again or type /start")
-		return
+		return true
 	}
 
 	// Clear pending status
@@ -489,6 +537,7 @@ func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState 
 		"• /status - System status\n"+
 		"• hi / hello - Test connection\n"+
 		"• /reset - Deauthorize this chat")
+	return true
 }
 
 func handleHelp(ctx context.Context, cmd notifier.Command, authState *auth.State, notif notifier.Notifier) {
@@ -558,9 +607,16 @@ func handlePing(ctx context.Context, cmd notifier.Command, machineHostname strin
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
-func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname string, notif notifier.Notifier) {
+func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname string, notif notifier.Notifier, running []string) {
 	log.Printf("Status request from %s", cmd.ChatID)
-	msg := fmt.Sprintf("📊 Status Report\n\nHost: %s\nSkills enabled: 0\nAlerts: 0 🔴 0 🟡\n\n(Full status coming in Phase 3)", machineHostname)
+	// Report what is actually running: a sensor that failed to start must not
+	// look healthy to the operator
+	skillList := "none"
+	if len(running) > 0 {
+		skillList = strings.Join(running, ", ")
+	}
+	msg := fmt.Sprintf("📊 Status Report\n\nHost: %s\nUptime: %s\nSkills running (%d): %s",
+		machineHostname, time.Since(daemonStartTime).Round(time.Second), len(running), skillList)
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
@@ -577,10 +633,19 @@ func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Not
 // a notifier alerts are only logged, but the bus is still drained so watchers
 // never block.
 func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
+	// Suppressed CONTACT alerts are only reported through these digests
+	digestTicker := time.NewTicker(digestInterval)
+	defer digestTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
+		case now := <-digestTicker.C:
+			for _, digest := range dedupEngine.Digests(now) {
+				deliverAlert(ctx, digest, notif, hostname)
+			}
 
 		case alert := <-bus:
 			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
@@ -592,17 +657,26 @@ func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *
 			if isDigest {
 				alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
 			}
-			if alert.Host == "" {
-				alert.Host = hostname
-			}
-			log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
-
-			if notif == nil {
-				continue
-			}
-			if err := notif.Send(ctx, alert); err != nil {
-				log.Printf("Failed to send alert: %v", err)
-			}
+			deliverAlert(ctx, alert, notif, hostname)
 		}
+	}
+}
+
+// digestInterval is how often processAlerts checks for CONTACT digests that
+// are due
+const digestInterval = 10 * time.Second
+
+// deliverAlert logs an alert and sends it, if there is a notifier
+func deliverAlert(ctx context.Context, alert notifier.Alert, notif notifier.Notifier, hostname string) {
+	if alert.Host == "" {
+		alert.Host = hostname
+	}
+	log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
+
+	if notif == nil {
+		return
+	}
+	if err := notif.Send(ctx, alert); err != nil {
+		log.Printf("Failed to send alert: %v", err)
 	}
 }

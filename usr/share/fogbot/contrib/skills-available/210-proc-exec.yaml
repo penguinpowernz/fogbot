@@ -1,8 +1,10 @@
 id: 210
 name: proc-exec
 description: >
-  Polls /proc for suspicious execution patterns: executables running from
-  /tmp or /dev/shm, process hiding (PID in /proc but not in ps output).
+  Checks every exec as it happens (via the kernel's process events
+  connector, with /proc polled as a backstop) for executables running from
+  /tmp, /dev/shm or an in-memory file (memfd), and process hiding (PID in
+  /proc but not in ps output).
 why: >
   Legitimate software doesn't run from /tmp or /dev/shm. These are
   staging areas for droppers and in-memory malware. Process hiding
@@ -18,3 +20,8 @@ config:
     - /dev/shm
     - /run
   check_process_hiding: true
+  # Executing an anonymous in-memory file (memfd_create) is how fileless
+  # malware runs a payload that never touches the disk. Some container
+  # runtimes briefly re-exec themselves this way while starting a container
+  # (runc shows as /memfd:runc_cloned...), which would alert here.
+  detect_memfd_exec: true
