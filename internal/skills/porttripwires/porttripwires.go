@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -102,33 +103,69 @@ func runIptables(args ...string) ([]byte, error) {
 	return exec.Command("iptables", args...).Output()
 }
 
-// tripwire describes the LOG rule for one traffic direction
+// chainRef names a chain in an iptables table
+type chainRef struct {
+	table string
+	chain string
+}
+
+func (c chainRef) String() string { return c.table + " " + c.chain }
+
+// tripwire describes the LOG rule for one traffic direction.
+//
+// The rules live in the raw table. Firewall managers such as ufw own the
+// filter table: ufw puts its chains at the head of INPUT, and they drop
+// 137-139 and 445 and accept allowed ports before a rule appended to INPUT is
+// ever reached, which blinded the tripwire to the very ports it watches. When
+// ufw manages the built-in chains it also flushes the filter, mangle and nat
+// tables on reload. It never touches raw, which every packet passes through
+// before filter. A LOG rule there sees each connection attempt whatever ufw
+// decides about it, and changes nothing about that decision.
 type tripwire struct {
-	direction string // rule ID suffix
-	chain     string
+	direction string   // rule ID suffix
+	chain     chainRef // where the rule goes
+	legacy    chainRef // where earlier versions put it; such rules are removed
 	configKey string
 	label     string
-	logUID    bool // log the UID of the local socket owner
+	match     string // matches ahead of the port list
+	logUID    bool   // log the UID of the local socket owner
 }
 
 var tripwires = []tripwire{
-	{"in", "INPUT", "watch_inbound", "inbound", false},
-	// Outbound packets come from a local socket, so the kernel can say whose
-	{"out", "OUTPUT", "watch_outbound", "outbound", true},
+	{
+		direction: "in",
+		chain:     chainRef{"raw", "PREROUTING"},
+		legacy:    chainRef{"filter", "INPUT"},
+		configKey: "watch_inbound",
+		label:     "inbound",
+		// Only traffic to this machine: not loopback (a local client talking to
+		// a local dev server), and not traffic routed through to VMs or containers
+		match: "! -i lo -p tcp -m addrtype --dst-type LOCAL",
+	},
+	{
+		direction: "out",
+		chain:     chainRef{"raw", "OUTPUT"},
+		legacy:    chainRef{"filter", "OUTPUT"},
+		configKey: "watch_outbound",
+		label:     "outbound",
+		match:     "! -o lo -p tcp",
+		// Outbound packets come from a local socket, so the kernel can say whose
+		logUID: true,
+	},
 }
 
 // ruleMatch narrows each LOG rule to new TCP connections: only the SYN that
 // opens one is logged, not every packet of it, so an established C2 session
 // doesn't flood the kernel log. The limit match caps logging at a burst of 20
-// then one a second, enough for a scan of every watched port. It is written
-// the way iptables -S prints it (--syn is shown as these --tcp-flags), so the
-// rule can be matched exactly against the live ruleset.
+// then one a second, enough for a scan of every watched port. Rules are
+// written the way iptables -S prints them (--syn is shown as these
+// --tcp-flags), so they can be matched exactly against the live ruleset.
 const ruleMatch = "-m tcp --tcp-flags FIN,SYN,RST,ACK SYN -m limit --limit 1/sec --limit-burst 20"
 
 // ruleCommand returns the iptables command that adds tw's LOG rule for ports
 func (tw tripwire) ruleCommand(ports, ruleID string) string {
-	cmd := fmt.Sprintf("iptables -A %s -p tcp -m multiport --dports %s %s -j LOG --log-prefix '%s: '",
-		tw.chain, ports, ruleMatch, ruleID)
+	cmd := fmt.Sprintf("iptables -t %s -A %s %s -m multiport --dports %s %s -j LOG --log-prefix '%s: '",
+		tw.chain.table, tw.chain.chain, tw.match, ports, ruleMatch, ruleID)
 	if tw.logUID {
 		cmd += " --log-uid"
 	}
@@ -173,6 +210,7 @@ func (p *PortTripwires) CheckSystemState() (bool, error) {
 // current rules aren't read and only the add commands are returned.
 func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills.SystemCommand, error) {
 	commands := []skills.SystemCommand{}
+	ufw := inspect && p.ufwActive()
 
 	for _, tw := range tripwires {
 		ports, err := extractPorts(cfg, tw.configKey)
@@ -187,9 +225,13 @@ func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills
 		if len(ports) > 0 {
 			portList := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ports)), ","), "[]")
 			cmd := tw.ruleCommand(portList, ruleID)
+			desc := fmt.Sprintf("Log new %s TCP connections on ports: %s", tw.label, portList)
+			if ufw {
+				desc += " (ufw is active: this goes in the raw table, which ufw doesn't manage, so ufw's rules and their order are untouched)"
+			}
 			add = &skills.SystemCommand{
 				Command:     cmd,
-				Description: fmt.Sprintf("Log new %s TCP connections on ports: %s", tw.label, portList),
+				Description: desc,
 				Metadata: map[string]string{
 					"rule_id":   ruleID,
 					"direction": tw.direction,
@@ -197,20 +239,30 @@ func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills
 				},
 			}
 			want, _ = shellquote.Split(cmd)
-			want = want[1:]
+			want = want[3:] // drop "iptables -t <table>"
 		}
 
-		var existing [][]string
+		var existing, legacy [][]string
 		exists := false
 		if inspect {
 			if existing, err = p.tripwireRules(tw.chain, ruleID); err != nil {
 				return nil, queryError{err}
 			}
+			if legacy, err = p.tripwireRules(tw.legacy, ruleID); err != nil {
+				return nil, queryError{err}
+			}
 			if want != nil {
-				if exists, err = p.ruleExists(want); err != nil {
+				if exists, err = p.ruleExists(tw.chain.table, want); err != nil {
 					return nil, queryError{err}
 				}
 			}
+		}
+
+		// Rules where earlier versions put them are always removed: behind
+		// ufw's chains they miss traffic, and the raw rule replaces them
+		for _, rule := range legacy {
+			commands = append(commands, p.removeCommand(tw, tw.legacy, rule,
+				fmt.Sprintf("Remove %s tripwire rule from its old place in %s (ports: %s)", tw.label, tw.legacy, argAfter(rule, "--dports"))))
 		}
 
 		// Keep the rule matching the config, if present; every other rule
@@ -237,18 +289,8 @@ func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills
 			if i == keep {
 				continue
 			}
-			ports := argAfter(rule, "--dports")
-			del := append([]string{"iptables", "-D"}, rule[1:]...)
-			commands = append(commands, skills.SystemCommand{
-				Command:     shellquote.Join(del...),
-				Description: fmt.Sprintf("Remove outdated %s tripwire rule (ports: %s)", tw.label, ports),
-				Metadata: map[string]string{
-					"rule_id":   ruleID,
-					"direction": tw.direction,
-					"ports":     ports,
-					"action":    "remove",
-				},
-			})
+			commands = append(commands, p.removeCommand(tw, tw.chain, rule,
+				fmt.Sprintf("Remove outdated %s tripwire rule (ports: %s)", tw.label, argAfter(rule, "--dports"))))
 		}
 
 		if add != nil && !exists {
@@ -259,10 +301,61 @@ func (p *PortTripwires) plan(cfg map[string]interface{}, inspect bool) ([]skills
 	return commands, nil
 }
 
-// tripwireRules returns the rules in chain whose LOG prefix is ruleID, as
+// removeCommand returns the command deleting rule (as iptables -S printed it)
+// from ref
+func (p *PortTripwires) removeCommand(tw tripwire, ref chainRef, rule []string, desc string) skills.SystemCommand {
+	ports := argAfter(rule, "--dports")
+	del := append([]string{"iptables", "-t", ref.table, "-D"}, rule[1:]...)
+	return skills.SystemCommand{
+		Command:     joinArgs(del),
+		Description: desc,
+		Metadata: map[string]string{
+			"rule_id":   p.generateRuleID(tw.direction),
+			"direction": tw.direction,
+			"ports":     ports,
+			"action":    "remove",
+		},
+	}
+}
+
+// plainArg matches arguments that need no quoting for shellquote.Split
+var plainArg = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./!-]+$`)
+
+// joinArgs joins args into a command that shellquote.Split turns back into
+// args, quoting only where needed so the approval prompt shows "! -i lo"
+// rather than shellquote.Join's "\! -i lo"
+func joinArgs(args []string) string {
+	words := make([]string, len(args))
+	for i, a := range args {
+		if plainArg.MatchString(a) {
+			words[i] = a
+		} else {
+			words[i] = shellquote.Join(a)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+// ufwActive reports whether ufw's rules are loaded. ufw.conf can say
+// ENABLED=yes while ufw isn't running, so the live ruleset is checked for the
+// chains ufw creates.
+func (p *PortTripwires) ufwActive() bool {
+	out, err := p.run("-t", "filter", "-S")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "-N ufw-before-input" {
+			return true
+		}
+	}
+	return false
+}
+
+// tripwireRules returns the rules in ref whose LOG prefix is ruleID, as
 // iptables -S prints them ("-A CHAIN ..."), split into arguments
-func (p *PortTripwires) tripwireRules(chain, ruleID string) ([][]string, error) {
-	out, err := p.run("-S", chain)
+func (p *PortTripwires) tripwireRules(ref chainRef, ruleID string) ([][]string, error) {
+	out, err := p.run("-t", ref.table, "-S", ref.chain)
 	if err != nil {
 		return nil, err
 	}
@@ -283,9 +376,9 @@ func (p *PortTripwires) tripwireRules(chain, ruleID string) ([][]string, error) 
 	return rules, nil
 }
 
-// ruleExists asks iptables whether rule (starting "-A CHAIN") is present
-func (p *PortTripwires) ruleExists(rule []string) (bool, error) {
-	_, err := p.run(append([]string{"-C"}, rule[1:]...)...)
+// ruleExists asks iptables whether rule (starting "-A CHAIN") is present in table
+func (p *PortTripwires) ruleExists(table string, rule []string) (bool, error) {
+	_, err := p.run(append([]string{"-t", table, "-C"}, rule[1:]...)...)
 	if err == nil {
 		return true, nil
 	}

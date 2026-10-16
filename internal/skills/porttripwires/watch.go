@@ -87,6 +87,9 @@ func (p *PortTripwires) Watch(ctx context.Context) (<-chan notifier.Alert, error
 	}()
 
 	log.Printf("[port-tripwires] Watching %s for %s and %s", path, p.generateRuleID("in"), p.generateRuleID("out"))
+	if p.ufwActive() {
+		log.Printf("[port-tripwires] ufw is active; tripwire rules are in the raw table, which ufw doesn't manage")
+	}
 	return alerts, nil
 }
 
