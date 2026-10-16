@@ -2,9 +2,11 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,5 +211,81 @@ func TestProcessUpdate_StripsBotMention(t *testing.T) {
 	cmd := tg.processUpdate(Update{Message: &Message{Text: "/status@fog_bot", Chat: &Chat{ID: 1}}})
 	if cmd == nil || cmd.Verb != "status" {
 		t.Fatalf("expected verb status, got %+v", cmd)
+	}
+}
+
+// recordingTransport records each request's method and form, answering 200
+type recordingTransport struct {
+	methods []string
+	forms   []url.Values
+}
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.ParseForm()
+	r.methods = append(r.methods, req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:])
+	r.forms = append(r.forms, req.PostForm)
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":true}`)), Header: make(http.Header)}, nil
+}
+
+// The bug: presses of an alert's Acknowledge button were never answered, so
+// the button span forever, and the signed token was never checked
+func TestProcessUpdate_AckButton(t *testing.T) {
+	s := newState(t)
+	s.Authorize("42")
+	tr := &recordingTransport{}
+	tg := NewTelegram("token", 0, s)
+	tg.httpClient.Transport = tr
+
+	press := func(chat int64, data string) *notifier.Command {
+		return tg.processUpdate(Update{CallbackQuery: &CallbackQuery{ID: "cb1", Data: data,
+			Message: &Message{MessageID: 7, Chat: &Chat{ID: chat}}}})
+	}
+
+	cmd := press(42, tg.makeAckButtonData(510))
+	if cmd == nil || cmd.Verb != notifier.CmdAck || len(cmd.Args) != 2 || cmd.Args[1] != "510" {
+		t.Fatalf("expected an ack for skill 510, got %+v", cmd)
+	}
+	if len(tr.methods) != 2 || tr.methods[0] != "answerCallbackQuery" || tr.methods[1] != "editMessageReplyMarkup" {
+		t.Fatalf("expected the callback answered and button removed, got %v", tr.methods)
+	}
+	if tr.forms[0].Get("callback_query_id") != "cb1" || tr.forms[1].Get("message_id") != "7" {
+		t.Fatalf("unexpected requests %v", tr.forms)
+	}
+
+	// A forged token, or a press from another chat, does nothing
+	tr.methods = nil
+	if cmd := press(42, "ack:510:0000000000000000"); cmd != nil {
+		t.Fatalf("forged callback accepted: %+v", cmd)
+	}
+	if cmd := press(99, tg.makeAckButtonData(510)); cmd != nil {
+		t.Fatalf("callback from an unauthorized chat accepted: %+v", cmd)
+	}
+	if len(tr.methods) != 0 {
+		t.Fatalf("API called for rejected callbacks: %v", tr.methods)
+	}
+}
+
+// makeAckButtonData returns the callback data makeAckButton puts on the button
+func (t *Telegram) makeAckButtonData(skillID int) string {
+	var kb struct {
+		InlineKeyboard [][]struct {
+			CallbackData string `json:"callback_data"`
+		} `json:"inline_keyboard"`
+	}
+	json.Unmarshal([]byte(t.makeAckButton(skillID)), &kb)
+	return kb.InlineKeyboard[0][0].CallbackData
+}
+
+// Replies are Markdown, falling back to plain text if Telegram rejects it
+func TestSendText_MarkdownWithFallback(t *testing.T) {
+	tr := &scriptedTransport{statuses: []int{http.StatusBadRequest, http.StatusOK}}
+	tg := NewTelegram("token", 1, newState(t))
+	tg.httpClient.Transport = tr
+
+	if err := tg.SendText(context.Background(), "1", "*Status* host_1"); err != nil {
+		t.Fatalf("expected the plain-text retry to succeed, got %v", err)
+	}
+	if tr.calls != 2 {
+		t.Fatalf("expected 2 calls, got %d", tr.calls)
 	}
 }
