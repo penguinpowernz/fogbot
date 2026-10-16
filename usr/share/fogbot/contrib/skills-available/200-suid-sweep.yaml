@@ -31,3 +31,8 @@ config:
     - /tmp
     - /var/tmp
     - /dev/shm
+  # Files bigger than this (MB) aren't hashed, only compared by size and
+  # mtime: a user could otherwise stall the sweep with a huge SUID file.
+  max_hash_mb: 200
+  # Alert for each SUID/SGID file too large to hash
+  alert_on_too_large: false

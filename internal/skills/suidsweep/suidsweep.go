@@ -2,6 +2,7 @@ package suidsweep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -36,7 +37,19 @@ type SuidSweep struct {
 	noSuidPaths []string
 	// flagged holds no-SUID-path findings already reported (path -> hash)
 	flagged map[string]string
+
+	// maxHashSize is the largest file hashed, in bytes. Anything bigger is
+	// recorded by size and mtime instead: a user can set the SUID bit on a
+	// huge file of their own, and reading it all would stall every sweep.
+	maxHashSize int64
+	// alertTooLarge raises an alert for each SUID/SGID file over maxHashSize
+	alertTooLarge bool
+	// tooLarge holds too-large files already reported (path -> size:mtime)
+	tooLarge map[string]string
 }
+
+// defaultMaxHashMB is the default max_hash_mb
+const defaultMaxHashMB = 200
 
 // New creates a new SuidSweep skill
 func New(baselineManager *baseline.Manager) *SuidSweep {
@@ -45,6 +58,7 @@ func New(baselineManager *baseline.Manager) *SuidSweep {
 		sweepInterval:   1 * time.Hour,
 		baselineManager: baselineManager,
 		searchPaths:     []string{"/usr", "/bin", "/sbin", "/opt", "/home"},
+		maxHashSize:     defaultMaxHashMB << 20,
 	}
 }
 
@@ -100,6 +114,18 @@ func (s *SuidSweep) Configure(cfg map[string]interface{}) error {
 		if len(searchPaths) > 0 {
 			s.searchPaths = searchPaths
 		}
+	}
+
+	s.maxHashSize = defaultMaxHashMB << 20
+	if mb, ok := cfg["max_hash_mb"].(int); ok {
+		if mb <= 0 {
+			return fmt.Errorf("invalid max_hash_mb %d: must be at least 1", mb)
+		}
+		s.maxHashSize = int64(mb) << 20
+	}
+	s.alertTooLarge = false
+	if v, ok := cfg["alert_on_too_large"].(bool); ok {
+		s.alertTooLarge = v
 	}
 
 	// An empty list is honoured, to switch the check off
@@ -158,6 +184,7 @@ func (s *SuidSweep) check(alertChan chan<- notifier.Alert, reported map[string]s
 	s.checkNoSuid(alertChan)
 
 	current := s.sweep()
+	s.checkTooLarge(alertChan, current)
 
 	bl, err := s.baselineManager.LoadSuid()
 	if err != nil {
@@ -282,6 +309,54 @@ func (s *SuidSweep) checkNoSuid(alertChan chan<- notifier.Alert) {
 	}
 }
 
+// checkTooLarge reports, if alert_on_too_large is set, each SUID/SGID file
+// too large to hash, once per size and mtime. Such a file can only be
+// compared against the baseline by size and mtime, which someone with root
+// can put back after changing it.
+func (s *SuidSweep) checkTooLarge(alertChan chan<- notifier.Alert, current map[string]baseline.SuidEntry) {
+	if s.tooLarge == nil {
+		s.tooLarge = make(map[string]string)
+	}
+	for path := range s.tooLarge {
+		if !current[path].TooLarge {
+			delete(s.tooLarge, path)
+		}
+	}
+	if !s.alertTooLarge {
+		return
+	}
+
+	paths := make([]string, 0)
+	for path, entry := range current {
+		if entry.TooLarge {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		entry := current[path]
+		id := fmt.Sprintf("%d:%d", entry.Size, entry.MTime.UnixNano())
+		if s.tooLarge[path] == id {
+			continue
+		}
+		s.tooLarge[path] = id
+		alertChan <- notifier.Alert{
+			Severity:    notifier.SeverityContact,
+			SkillID:     SkillID,
+			SkillName:   SkillName,
+			Title:       "SUID/SGID File Too Large to Hash",
+			Size:        fmt.Sprintf("%d MB", entry.Size>>20),
+			Activity:    fmt.Sprintf("SUID/SGID file over the %d MB hashing limit: %s", s.maxHashSize>>20, filepath.Base(path)),
+			Location:    path,
+			Unit:        fmt.Sprintf("uid=%d gid=%d mode=%s", entry.UID, entry.GID, os.FileMode(entry.Mode)),
+			Time:        time.Now(),
+			Equipment:   "changes to it are detected by size and mtime only",
+			Acknowledge: true,
+		}
+	}
+}
+
 func (s *SuidSweep) savePending(current map[string]baseline.SuidEntry) error {
 	err := s.baselineManager.SavePendingSuid(&baseline.Baseline{
 		Type:      "suid",
@@ -325,7 +400,7 @@ func insideAnother(path string, roots []string) bool {
 func (s *SuidSweep) sweep() map[string]baseline.SuidEntry {
 	results := make(map[string]baseline.SuidEntry)
 	for _, searchPath := range s.searchPaths {
-		walkSuid(searchPath, s.noSuidPaths, results)
+		walkSuid(searchPath, s.noSuidPaths, s.maxHashSize, results)
 	}
 	log.Printf("[suid-sweep] Found %d SUID/SGID binaries", len(results))
 	return results
@@ -340,14 +415,14 @@ func (s *SuidSweep) sweepNoSuid() map[string]baseline.SuidEntry {
 			continue
 		}
 		walked[root] = true
-		walkSuid(root, nil, results)
+		walkSuid(root, nil, s.maxHashSize, results)
 	}
 	return results
 }
 
 // walkSuid records every SUID/SGID file under root into results, not
 // descending into skip
-func walkSuid(root string, skip []string, results map[string]baseline.SuidEntry) {
+func walkSuid(root string, skip []string, maxHashSize int64, results map[string]baseline.SuidEntry) {
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Log permission/access errors so the operator knows the sweep is incomplete
@@ -366,7 +441,11 @@ func walkSuid(root string, skip []string, results map[string]baseline.SuidEntry)
 				return nil
 			}
 
-			hash, _ := baseline.HashFile(path)
+			hash, err := baseline.HashFile(path, maxHashSize)
+			tooLarge := errors.Is(err, baseline.ErrTooLarge)
+			if tooLarge {
+				log.Printf("[suid-sweep] Not hashing %s: %d MB is over the %d MB limit", path, info.Size()>>20, maxHashSize>>20)
+			}
 
 			entry := baseline.SuidEntry{
 				Path:  path,
@@ -376,6 +455,8 @@ func walkSuid(root string, skip []string, results map[string]baseline.SuidEntry)
 				Size:  info.Size(),
 				Hash:  hash,
 				MTime: info.ModTime(),
+
+				TooLarge: tooLarge,
 			}
 
 			results[path] = entry

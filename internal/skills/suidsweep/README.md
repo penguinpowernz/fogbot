@@ -14,7 +14,11 @@ strong sign something is wrong.
 
 1. On startup, and every `sweep_interval` after that, it walks `watch_paths`
    and records every file with the SUID or SGID bit: path, owner, mode and
-   SHA-256.
+   SHA-256. A file over `max_hash_mb` isn't read: any user can set the SUID bit
+   on a file of their own, and hashing a huge (or sparse) one would stall the
+   sweep. Its size and mtime stand in for the hash, so a change to it is only
+   seen if one of those changes. Set `alert_on_too_large: true` to get a CONTACT
+   "SUID/SGID File Too Large to Hash" alert for each one.
 2. With no approved baseline yet, the sweep is saved as a pending baseline and a
    NOMINAL "SUID Baseline Pending Approval" alert asks you to review it.
 3. Once approved, each sweep is compared against the baseline. A new SUID/SGID
@@ -61,6 +65,8 @@ config:
     - /tmp
     - /var/tmp
     - /dev/shm
+  max_hash_mb: 200
+  alert_on_too_large: false
 ```
 
 | Key | Default | Meaning |
@@ -68,6 +74,8 @@ config:
 | `sweep_interval` | `1h` | Time between sweeps |
 | `watch_paths` | `/usr /bin /sbin /opt /home` | Directories walked, recursively |
 | `no_suid_paths` | none (shipped: `/home /root /tmp /var/tmp /dev/shm`) | Directories where any SUID/SGID file alerts; `[]` switches this off |
+| `max_hash_mb` | `200` | Largest file hashed, in MB; bigger ones are compared by size and mtime |
+| `alert_on_too_large` | `false` | Alert (CONTACT) for each SUID/SGID file over `max_hash_mb` |
 
 ## Examples
 

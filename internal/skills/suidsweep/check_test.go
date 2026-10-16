@@ -221,3 +221,62 @@ func TestUnder(t *testing.T) {
 		}
 	}
 }
+
+// A SUID file over max_hash_mb isn't read; alert_on_too_large reports it once
+func TestCheck_TooLargeFileNotHashedAndOptionallyAlerted(t *testing.T) {
+	bin := t.TempDir()
+	mgr := baseline.NewManager(t.TempDir())
+	s := New(mgr)
+	if err := s.Configure(map[string]interface{}{
+		"watch_paths":        []interface{}{bin},
+		"max_hash_mb":        1,
+		"alert_on_too_large": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan notifier.Alert, 10)
+	reported := map[string]string{}
+
+	big := filepath.Join(bin, "big")
+	writeSuid(t, big, "")
+	os.Truncate(big, 2<<20) // clears the SUID bit
+	os.Chmod(big, 0755|os.ModeSetuid)
+
+	s.check(alerts, reported, true)
+	var titles []string
+	for _, a := range takeAlerts(alerts) {
+		titles = append(titles, a.Title)
+	}
+	if len(titles) != 2 || titles[0] != "SUID/SGID File Too Large to Hash" {
+		t.Fatalf("expected a too-large alert then the pending baseline, got %q", titles)
+	}
+	pending, _ := mgr.LoadPendingSuid()
+	if e := pending.Entries[big]; !e.TooLarge || e.Hash != "" {
+		t.Fatalf("expected an unhashed too-large entry, got %+v", e)
+	}
+
+	// Reported once, not on every sweep
+	s.check(alerts, reported, false)
+	if got := takeAlerts(alerts); len(got) != 0 {
+		t.Fatalf("expected no repeat alert, got %+v", got)
+	}
+}
+
+func TestCheck_TooLargeIsQuietByDefault(t *testing.T) {
+	bin := t.TempDir()
+	s := New(baseline.NewManager(t.TempDir()))
+	s.Configure(map[string]interface{}{"watch_paths": []interface{}{bin}, "max_hash_mb": 1})
+	alerts := make(chan notifier.Alert, 10)
+
+	big := filepath.Join(bin, "big")
+	writeSuid(t, big, "")
+	os.Truncate(big, 2<<20) // clears the SUID bit
+	os.Chmod(big, 0755|os.ModeSetuid)
+
+	s.check(alerts, map[string]string{}, true)
+	for _, a := range takeAlerts(alerts) {
+		if a.Title == "SUID/SGID File Too Large to Hash" {
+			t.Fatal("too-large alert without alert_on_too_large")
+		}
+	}
+}

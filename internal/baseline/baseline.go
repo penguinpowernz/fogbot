@@ -3,6 +3,7 @@ package baseline
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,10 @@ type SuidEntry struct {
 	Size  int64     `json:"size"`
 	Hash  string    `json:"hash"`  // SHA256 of file
 	MTime time.Time `json:"mtime"` // modification time
+
+	// TooLarge is set when the file was over the size limit and not hashed;
+	// Size and MTime stand in for its hash
+	TooLarge bool `json:"too_large,omitempty"`
 }
 
 // Baseline represents a known-good state snapshot
@@ -212,6 +217,10 @@ func sameEntries(a, b map[string]SuidEntry) bool {
 		if !ok || ea.Hash != eb.Hash || ea.Mode != eb.Mode || ea.UID != eb.UID || ea.GID != eb.GID {
 			return false
 		}
+		// Files too large to hash have only their size and mtime
+		if ea.TooLarge != eb.TooLarge || ea.Size != eb.Size || !ea.MTime.Equal(eb.MTime) {
+			return false
+		}
 	}
 	return true
 }
@@ -257,6 +266,11 @@ func (baseline *Baseline) Changed(current map[string]SuidEntry) []SuidEntry {
 			continue
 		}
 		hashDiffers := old.Hash != "" && entry.Hash != "" && old.Hash != entry.Hash
+		// Without a hash for a file too large to hash, its size and mtime
+		// are all there is to go on
+		if old.TooLarge || entry.TooLarge {
+			hashDiffers = old.Size != entry.Size || !old.MTime.Equal(entry.MTime)
+		}
 		if hashDiffers || old.Mode != entry.Mode || old.UID != entry.UID || old.GID != entry.GID {
 			changed = append(changed, entry)
 		}
@@ -265,12 +279,17 @@ func (baseline *Baseline) Changed(current map[string]SuidEntry) []SuidEntry {
 	return changed
 }
 
+// ErrTooLarge is returned by HashFile for a file over the size limit
+var ErrTooLarge = errors.New("file too large to hash")
+
 // HashFile computes SHA256 hash of a regular file without loading it all into
-// memory. Anything else is refused: the SUID sweep walks user-writable trees,
+// memory. A file larger than maxSize bytes (when maxSize > 0) is refused with
+// ErrTooLarge: any user can set the SUID bit on a file of their own under
+// /home, and hashing a huge (or sparse) one would stall every sweep. Anything else is refused: the SUID sweep walks user-writable trees,
 // and opening a FIFO there (which a user can chmod u+s) would block forever and
 // silently stop every later sweep. O_NONBLOCK keeps the open itself from
 // blocking if the path is swapped for a FIFO after it was stat'ed.
-func HashFile(path string) (string, error) {
+func HashFile(path string, maxSize int64) (string, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
@@ -284,10 +303,22 @@ func HashFile(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s is not a regular file", path)
 	}
+	if maxSize > 0 && info.Size() > maxSize {
+		return "", ErrTooLarge
+	}
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	var r io.Reader = f
+	if maxSize > 0 {
+		// The file may grow after the size check
+		r = io.LimitReader(f, maxSize+1)
+	}
+	n, err := io.Copy(h, r)
+	if err != nil {
 		return "", err
+	}
+	if maxSize > 0 && n > maxSize {
+		return "", ErrTooLarge
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

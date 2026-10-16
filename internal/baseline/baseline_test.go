@@ -20,7 +20,7 @@ func TestHashFile_KnownContent(t *testing.T) {
 		t.Fatalf("could not write test file: %v", err)
 	}
 
-	hash, err := HashFile(path)
+	hash, err := HashFile(path, 0)
 	if err != nil {
 		t.Fatalf("HashFile returned error: %v", err)
 	}
@@ -38,11 +38,11 @@ func TestHashFile_Deterministic(t *testing.T) {
 	path := filepath.Join(dir, "test.txt")
 	os.WriteFile(path, []byte("deterministic content"), 0644)
 
-	h1, err := HashFile(path)
+	h1, err := HashFile(path, 0)
 	if err != nil {
 		t.Fatalf("first HashFile call failed: %v", err)
 	}
-	h2, err := HashFile(path)
+	h2, err := HashFile(path, 0)
 	if err != nil {
 		t.Fatalf("second HashFile call failed: %v", err)
 	}
@@ -59,15 +59,15 @@ func TestHashFile_DifferentContent_DifferentHash(t *testing.T) {
 	os.WriteFile(f1, []byte("content A"), 0644)
 	os.WriteFile(f2, []byte("content B"), 0644)
 
-	h1, _ := HashFile(f1)
-	h2, _ := HashFile(f2)
+	h1, _ := HashFile(f1, 0)
+	h2, _ := HashFile(f2, 0)
 	if h1 == h2 {
 		t.Error("different file content should produce different hashes")
 	}
 }
 
 func TestHashFile_MissingFile_Error(t *testing.T) {
-	_, err := HashFile(filepath.Join(t.TempDir(), "nonexistent.txt"))
+	_, err := HashFile(filepath.Join(t.TempDir(), "nonexistent.txt"), 0)
 	if err == nil {
 		t.Error("expected error for missing file")
 	}
@@ -78,7 +78,7 @@ func TestHashFile_EmptyFile(t *testing.T) {
 	path := filepath.Join(dir, "empty.txt")
 	os.WriteFile(path, []byte{}, 0644)
 
-	hash, err := HashFile(path)
+	hash, err := HashFile(path, 0)
 	if err != nil {
 		t.Fatalf("HashFile of empty file returned error: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestHashFile_FIFO_ErrorsWithoutBlocking(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := HashFile(path)
+		_, err := HashFile(path, 0)
 		done <- err
 	}()
 
@@ -492,5 +492,43 @@ func TestApproveReviewedSuid_RejectsBaselineChangedSinceReview(t *testing.T) {
 
 	if err := mgr.ApproveReviewedSuid(swept, "cli:test"); err != nil {
 		t.Fatalf("approving the reviewed baseline failed: %v", err)
+	}
+}
+
+// Anyone can chmod u+s their own file under /home; a huge or sparse one must
+// not be read in full
+func TestHashFile_RefusesFileOverLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big")
+	f, _ := os.Create(path)
+	f.Truncate(1 << 40) // 1 TiB, sparse
+	f.Close()
+
+	if _, err := HashFile(path, 200<<20); err != ErrTooLarge {
+		t.Fatalf("expected ErrTooLarge, got %v", err)
+	}
+	small := filepath.Join(t.TempDir(), "small")
+	os.WriteFile(small, []byte("x"), 0644)
+	if _, err := HashFile(small, 200<<20); err != nil {
+		t.Fatalf("file under the limit refused: %v", err)
+	}
+}
+
+func TestChanged_TooLargeComparesSizeAndMTime(t *testing.T) {
+	when := time.Unix(1700000000, 0)
+	old := SuidEntry{Path: "/a", Size: 300 << 20, MTime: when, TooLarge: true}
+	bl := &Baseline{Entries: map[string]SuidEntry{"/a": old}}
+
+	if got := bl.Changed(map[string]SuidEntry{"/a": old}); len(got) != 0 {
+		t.Fatalf("unchanged file reported: %+v", got)
+	}
+	grown := old
+	grown.Size++
+	if got := bl.Changed(map[string]SuidEntry{"/a": grown}); len(got) != 1 {
+		t.Fatal("size change not reported")
+	}
+	touched := old
+	touched.MTime = when.Add(time.Second)
+	if got := bl.Changed(map[string]SuidEntry{"/a": touched}); len(got) != 1 {
+		t.Fatal("mtime change not reported")
 	}
 }
