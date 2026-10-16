@@ -101,7 +101,7 @@ Configuration via environment variables:
 | 610 | chkrootkit        | Rootkit detection wrapper                            | ❌   |        |
 | 700 | kernel-mod        | Alert on kernel module loads                         | ❌   |        |
 | 710 | net-watch         | Monitor network connections                          | ❌   |        |
-| 715 | net-discover      | Detect new network interfaces                        | ❌   |        |
+| 715 | net-discover      | Detect new hosts on the LAN (passive)                | ❌   |        |
 | 800 | bpftrace-exec     | eBPF-based execution monitoring                      | ❌   |        |
 | 900 | resource-anomaly  | CPU/memory anomaly detection                         | ❌   |        |
 

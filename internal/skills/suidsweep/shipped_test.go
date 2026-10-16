@@ -33,4 +33,7 @@ func TestShippedYAML(t *testing.T) {
 	if len(s.searchPaths) != 6 || s.searchPaths[0] != "/bin" {
 		t.Errorf("expected watch_paths from YAML, got %v", s.searchPaths)
 	}
+	if len(s.noSuidPaths) != 5 || s.noSuidPaths[0] != "/home" {
+		t.Errorf("expected no_suid_paths from YAML, got %v", s.noSuidPaths)
+	}
 }
