@@ -107,12 +107,13 @@ func (f *FileWatch) SetupHints() []string {
 
 	var hints []string
 
+	// Quote everything: the operator is invited to paste these into a root shell
 	if len(rootMissing) > 0 {
-		hints = append(hints, fmt.Sprintf("sudo touch %s", strings.Join(rootMissing, " ")))
+		hints = append(hints, "sudo touch -- "+shellquote.Join(rootMissing...))
 	}
 
 	for user, paths := range homeMissing {
-		hints = append(hints, fmt.Sprintf("sudo -iu %s touch %s", user, strings.Join(paths, " ")))
+		hints = append(hints, fmt.Sprintf("sudo -iu %s touch -- %s", shellquote.Join(user), shellquote.Join(paths...)))
 	}
 
 	return hints

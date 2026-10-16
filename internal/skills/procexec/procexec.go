@@ -157,7 +157,7 @@ func (p *ProcExec) scanProc(alertChan chan<- notifier.Alert) {
 
 		// Check if exe is in a suspicious location
 		for _, suspPath := range p.suspiciousPaths {
-			if strings.HasPrefix(exePath, suspPath) {
+			if underPath(exePath, suspPath) {
 				// Mark as seen
 				p.mu.Lock()
 				p.seenProcs[pid] = true
@@ -194,6 +194,16 @@ func (p *ProcExec) scanProc(alertChan chan<- notifier.Alert) {
 			}
 		}
 	}
+}
+
+// underPath reports whether exe is dir or inside it. A plain prefix match
+// would also flag /tmpfiles/x for /tmp.
+func underPath(exe, dir string) bool {
+	dir = strings.TrimSuffix(dir, "/")
+	if dir == "" {
+		return strings.HasPrefix(exe, "/")
+	}
+	return exe == dir || strings.HasPrefix(exe, dir+"/")
 }
 
 func (p *ProcExec) cleanupSeenProcs() {

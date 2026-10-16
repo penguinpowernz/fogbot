@@ -298,7 +298,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 			log.Fatalf("Failed to start command handler: %v", err)
 		}
 
-		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname)
+		go handleCommands(ctx, cmdChan, authState, cfg, notif, machineHostname, skillMgr)
 	}
 
 	// Setup signal handling
@@ -318,6 +318,14 @@ func runDaemon(cmd *cobra.Command, args []string) {
 					log.Printf("Failed to reload config: %v", err)
 				} else {
 					log.Printf("Config reloaded successfully")
+				}
+
+				// Startup repair must only run what is approved now: pick up
+				// approvals revoked by `fogbot skill disable` since startup
+				if approvalTracker != nil {
+					if err := approvalTracker.Reload(); err != nil {
+						log.Printf("Failed to reload approved commands: %v", err)
+					}
 				}
 
 				configs, err := skills.LoadEnabledConfigs(skills.SkillsEnabledPath)
@@ -367,7 +375,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 }
 
-func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string) {
+func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authState *auth.State, cfg *config.Config, notif notifier.Notifier, machineHostname string, skillMgr *skillManager) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -399,7 +407,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 
 			case notifier.CmdStatus:
 				if authState.IsAuthorized(cmd.ChatID) {
-					handleStatus(ctx, cmd, machineHostname, notif)
+					handleStatus(ctx, cmd, machineHostname, notif, skillMgr.runningNames())
 				}
 
 			case notifier.CmdApprove:
@@ -413,9 +421,7 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 					// Check if any part of the message contains a valid auth code
 					for _, word := range cmd.Args {
 						code := strings.ToUpper(word)
-						if auth.ValidateCode(code) && authState.VerifyCode(code) {
-							// Found valid code! Authorize
-							handleAuthCodeReceived(ctx, cmd.ChatID, code, authState, notif)
+						if auth.ValidateCode(code) && handleAuthCodeReceived(ctx, cmd.ChatID, code, authState, notif) {
 							break
 						}
 					}
@@ -473,14 +479,18 @@ func handleStart(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 		"Type /help for more information.")
 }
 
-func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState *auth.State, notif notifier.Notifier) {
+// handleAuthCodeReceived pairs the chat if code is the current pairing code,
+// and reports whether it was
+func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState *auth.State, notif notifier.Notifier) bool {
+	ok, err := authState.RedeemCode(chatID, code)
+	if !ok {
+		return false
+	}
 	log.Printf("Valid auth code received from chat %s", chatID)
-
-	// Authorize the chat
-	if err := authState.Authorize(chatID); err != nil {
+	if err != nil {
 		log.Printf("Failed to authorize %s: %v", chatID, err)
 		sendSimpleMessage(ctx, notif, chatID, "❌ Authorization failed. Please try again or type /start")
-		return
+		return true
 	}
 
 	// Clear pending status
@@ -495,6 +505,7 @@ func handleAuthCodeReceived(ctx context.Context, chatID, code string, authState 
 		"• /status - System status\n"+
 		"• hi / hello - Test connection\n"+
 		"• /reset - Deauthorize this chat")
+	return true
 }
 
 func handleHelp(ctx context.Context, cmd notifier.Command, authState *auth.State, notif notifier.Notifier) {
@@ -564,9 +575,16 @@ func handlePing(ctx context.Context, cmd notifier.Command, machineHostname strin
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 
-func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname string, notif notifier.Notifier) {
+func handleStatus(ctx context.Context, cmd notifier.Command, machineHostname string, notif notifier.Notifier, running []string) {
 	log.Printf("Status request from %s", cmd.ChatID)
-	msg := fmt.Sprintf("📊 Status Report\n\nHost: %s\nSkills enabled: 0\nAlerts: 0 🔴 0 🟡\n\n(Full status coming in Phase 3)", machineHostname)
+	// Report what is actually running: a sensor that failed to start must not
+	// look healthy to the operator
+	skillList := "none"
+	if len(running) > 0 {
+		skillList = strings.Join(running, ", ")
+	}
+	msg := fmt.Sprintf("📊 Status Report\n\nHost: %s\nUptime: %s\nSkills running (%d): %s",
+		machineHostname, time.Since(daemonStartTime).Round(time.Second), len(running), skillList)
 	sendSimpleMessage(ctx, notif, cmd.ChatID, msg)
 }
 

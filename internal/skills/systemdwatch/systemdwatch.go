@@ -163,6 +163,11 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 					return
 				}
 
+				if !fromSystemd(conn, sig) {
+					log.Printf("[systemd-watch] Ignoring %s from %s: not sent by systemd", sig.Name, sig.Sender)
+					continue
+				}
+
 				log.Printf("[systemd-watch] Received D-Bus signal: %s from %s", sig.Name, sig.Path)
 				s.handleSignal(sig, alerts)
 			}
@@ -170,6 +175,23 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 	}()
 
 	return alerts, nil
+}
+
+// fromSystemd reports whether sig was sent by systemd. The match rules only
+// filter broadcast signals: the system bus lets any local user send a signal
+// straight to this connection, so a forged Reloading or UnitFilesChanged would
+// otherwise raise alerts. The owner is looked up per signal because systemd
+// gets a new unique name when it re-executes.
+func fromSystemd(conn *dbus.Conn, sig *dbus.Signal) bool {
+	if sig.Path != "/org/freedesktop/systemd1" {
+		return false
+	}
+	var owner string
+	if err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, "org.freedesktop.systemd1").Store(&owner); err != nil {
+		log.Printf("[systemd-watch] Failed to look up systemd's bus name: %v", err)
+		return false
+	}
+	return sig.Sender == owner
 }
 
 func (s *SystemdWatch) handleSignal(sig *dbus.Signal, alerts chan<- notifier.Alert) {

@@ -140,6 +140,23 @@ func (s *State) AuthorizedChatID() string {
 func (s *State) Authorize(chatID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.authorizeLocked(chatID)
+}
+
+// RedeemCode authorizes chatID if it sent /start and code is the current
+// pairing code. The check and the authorization happen under one lock, so two
+// chats racing with the same code can't both be told they paired.
+func (s *State) RedeemCode(chatID, code string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, pending := s.pendingAuth[chatID]; !pending || !s.codeMatchesLocked(code) {
+		return false, nil
+	}
+	return true, s.authorizeLocked(chatID)
+}
+
+// authorizeLocked marks a chat as authorized. Caller must hold mu.
+func (s *State) authorizeLocked(chatID string) error {
 	s.AuthorizedChat = chatID
 	s.AuthorizedAt = time.Now()
 	s.CodeUsed = true
@@ -160,7 +177,12 @@ func (s *State) GetCode() string {
 func (s *State) VerifyCode(code string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.codeMatchesLocked(code)
+}
 
+// codeMatchesLocked reports whether code is the current, unused pairing code.
+// Caller must hold mu.
+func (s *State) codeMatchesLocked(code string) bool {
 	// Already authorized
 	if s.AuthorizedChat != "" {
 		return false

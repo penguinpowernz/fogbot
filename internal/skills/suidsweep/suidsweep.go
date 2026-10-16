@@ -168,6 +168,20 @@ func (s *SuidSweep) check(alertChan chan<- notifier.Alert, reported map[string]s
 
 	newBinaries := bl.Diff(current)
 	changedBinaries := bl.Changed(current)
+
+	// Forget changes that are gone (removed, or put back as approved). Otherwise
+	// a planted binary that the operator deletes could be planted again, with
+	// the same content, and never be reported.
+	outstanding := make(map[string]bool, len(newBinaries)+len(changedBinaries))
+	for _, binary := range append(newBinaries, changedBinaries...) {
+		outstanding[binary.Path] = true
+	}
+	for path := range reported {
+		if !outstanding[path] {
+			delete(reported, path)
+		}
+	}
+
 	if len(newBinaries) == 0 && len(changedBinaries) == 0 {
 		return
 	}

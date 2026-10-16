@@ -72,6 +72,21 @@ func TestCheck_BaselineLifecycle(t *testing.T) {
 		t.Fatalf("expected pending baseline with 2 entries, got %+v", pending)
 	}
 
+	// Removing the binary and planting it again reports it again
+	if err := os.Remove(filepath.Join(bin, "evil")); err != nil {
+		t.Fatal(err)
+	}
+	s.check(alerts, reported, false)
+	if got := takeAlerts(alerts); len(got) != 0 {
+		t.Fatalf("expected no alerts once the binary is removed, got %+v", got)
+	}
+	writeSuid(t, filepath.Join(bin, "evil"), "backdoor")
+	s.check(alerts, reported, false)
+	got = takeAlerts(alerts)
+	if len(got) != 1 || got[0].Title != "New SUID/SGID Binary Detected" {
+		t.Fatalf("expected re-planted binary to alert again, got %+v", got)
+	}
+
 	// A binary replaced in place is reported as modified
 	writeSuid(t, filepath.Join(bin, "sudo"), "trojaned")
 	s.check(alerts, reported, false)

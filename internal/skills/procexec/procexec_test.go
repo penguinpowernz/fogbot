@@ -409,3 +409,21 @@ func TestDeduceCommandsAndCheckSystemState(t *testing.T) {
 		t.Error("CheckSystemState should always return true for proc-exec")
 	}
 }
+
+func TestUnderPath(t *testing.T) {
+	for _, tc := range []struct {
+		exe, dir string
+		want     bool
+	}{
+		{"/tmp/x", "/tmp", true},
+		{"/tmp/x", "/tmp/", true},
+		{"/tmp/x (deleted)", "/tmp", true},
+		{"/dev/shm/a/b", "/dev/shm", true},
+		{"/tmpfiles/x", "/tmp", false},
+		{"/usr/bin/tmp", "/tmp", false},
+	} {
+		if got := underPath(tc.exe, tc.dir); got != tc.want {
+			t.Errorf("underPath(%q, %q) = %v, want %v", tc.exe, tc.dir, got, tc.want)
+		}
+	}
+}

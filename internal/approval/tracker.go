@@ -148,10 +148,30 @@ func (t *Tracker) load() error {
 		return fmt.Errorf("failed to parse approvals: %w", err)
 	}
 
+	// Key by the hash of what was actually approved, not the stored hash, so
+	// an entry can only ever approve the command it records
+	t.approvals = make(map[string]ApprovedCommand, len(approvals))
 	for _, approval := range approvals {
+		approval.Hash = hashCommand(approval.SkillID, approval.Command)
 		t.approvals[approval.Hash] = approval
 	}
 
+	return nil
+}
+
+// Reload re-reads approvals from disk, picking up approvals and revocations
+// made by the CLI since the tracker was loaded
+func (t *Tracker) Reload() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if err := t.load(); err != nil {
+		if os.IsNotExist(err) {
+			t.approvals = make(map[string]ApprovedCommand)
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

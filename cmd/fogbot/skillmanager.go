@@ -186,6 +186,20 @@ func (m *skillManager) stop(skill skills.Skill, r *runningSkill) {
 	log.Printf("Stopped watcher for skill #%d: %s", skill.ID(), skill.Name())
 }
 
+// runningNames returns the names of the skills whose watchers are running
+func (m *skillManager) runningNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, 0, len(m.running))
+	for id := range m.running {
+		if skill, ok := m.registry.Get(id); ok {
+			names = append(names, skill.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (m *skillManager) send(alert notifier.Alert) {
 	select {
 	case m.bus <- alert:

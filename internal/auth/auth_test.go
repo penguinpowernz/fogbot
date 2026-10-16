@@ -87,3 +87,31 @@ func TestCodeForStart_ReusesUnusedCode(t *testing.T) {
 		t.Error("a burned code was handed out again")
 	}
 }
+
+// Only a chat that sent /start can pair, and only once per code
+func TestRedeemCode(t *testing.T) {
+	s, err := NewState(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := s.CodeForStart()
+
+	if ok, _ := s.RedeemCode("stranger", code); ok {
+		t.Fatal("a chat that never sent /start paired")
+	}
+
+	s.MarkPendingAuth("operator")
+	s.MarkPendingAuth("racer")
+	if ok, _ := s.RedeemCode("operator", "FOG-AAAA-AAAA"); ok {
+		t.Fatal("a wrong code paired")
+	}
+	if ok, err := s.RedeemCode("operator", code); !ok || err != nil {
+		t.Fatalf("expected operator to pair, got ok=%v err=%v", ok, err)
+	}
+	if ok, _ := s.RedeemCode("racer", code); ok {
+		t.Fatal("a second chat paired with the same code")
+	}
+	if !s.IsAuthorized("operator") {
+		t.Fatal("operator should be the authorized chat")
+	}
+}
