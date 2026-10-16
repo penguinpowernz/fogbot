@@ -21,6 +21,8 @@ type stubSkill struct {
 	config   map[string]interface{}
 	watching int // live watchers
 	starts   int
+
+	stopDelay time.Duration // how long the watcher takes to exit once cancelled
 }
 
 func (s *stubSkill) ID() int      { return s.id }
@@ -41,9 +43,13 @@ func (s *stubSkill) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 	s.starts++
 	s.mu.Unlock()
 	ch := make(chan notifier.Alert)
+	delay := s.stopDelay
+	if delay == 0 {
+		delay = 20 * time.Millisecond // a watcher that takes a moment to wind down
+	}
 	go func() {
 		<-ctx.Done()
-		time.Sleep(20 * time.Millisecond) // a watcher that takes a moment to wind down
+		time.Sleep(delay)
 		s.mu.Lock()
 		s.watching--
 		s.mu.Unlock()
@@ -319,5 +325,69 @@ func TestSkillManager_StateCheckDoesNotRepeatStartupRepairAlert(t *testing.T) {
 	m.checkSystemState()
 	if len(bus) != 0 {
 		t.Fatalf("state check repeated the startup repair alert: %+v", <-bus)
+	}
+}
+
+// A watcher that outlives the stop timeout used to be reconfigured and
+// started again while it was still running, two watchers sharing one skill
+func TestSkillManager_SlowStopIsNotReconfiguredUntilItExits(t *testing.T) {
+	old := watcherStopTimeout
+	watcherStopTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { watcherStopTimeout = old })
+
+	a := &stubSkill{id: 1, name: "a", stopDelay: 200 * time.Millisecond}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, make(chan notifier.Alert, 10), "host")
+
+	m.apply([]skills.SkillConfig{cfg(1, map[string]interface{}{"x": 1})})
+	// stubSkill.Configure panics if called while its watcher still runs
+	res := m.apply([]skills.SkillConfig{cfg(1, map[string]interface{}{"x": 2})})
+	if len(res.failed) != 1 {
+		t.Fatalf("expected the slow skill reported as failed, got %s", res)
+	}
+	if names := m.runningNames(); len(names) != 0 {
+		t.Fatalf("a stopping watcher was reported running: %v", names)
+	}
+
+	// Once it has exited it is started again with the new config
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, w, starts := a.state()
+		a.mu.Lock()
+		x := a.config["x"]
+		a.mu.Unlock()
+		if starts == 2 && w == 1 && x == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("not restarted after stopping: starts=%d watching=%d config=%v", starts, w, x)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// `fogbot skill disable` removes a skill's rules before the reload that stops
+// it; that isn't the tampering the state check alerts on
+func TestSkillManager_StateCheckIgnoresSkillDisabledOnHost(t *testing.T) {
+	a := &stateSkill{stubSkill: stubSkill{id: 1, name: "a"}, configured: true}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+
+	repairs := 0
+	m.repair = func(skills.Skill) error { repairs++; return nil }
+	m.enabledOnDisk = func(skills.Skill) bool { return false }
+
+	a.setConfigured(false)
+	m.checkSystemState()
+	if repairs != 0 || len(bus) != 0 {
+		t.Fatalf("disabled skill was repaired (%d) or alerted (%d)", repairs, len(bus))
 	}
 }

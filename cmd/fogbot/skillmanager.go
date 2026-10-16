@@ -10,14 +10,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 )
 
-// watcherStopTimeout bounds how long a reload waits for a stopped watcher to exit
-const watcherStopTimeout = 10 * time.Second
+// watcherStopTimeout bounds how long a reload waits for a stopped watcher to
+// exit. A variable so tests can shorten it.
+var watcherStopTimeout = 10 * time.Second
 
 // stateCheckInterval is how often running skills' system config (audit rules,
 // iptables rules) is checked. It doesn't only go missing across reboots:
@@ -46,6 +48,9 @@ type skillManager struct {
 	mu      sync.Mutex
 	running map[int]*runningSkill
 
+	// configs are the enabled skill configs last applied. Guarded by mu.
+	configs []skills.SkillConfig
+
 	// missing tracks skills whose system config was found missing and could
 	// not be restored, so that is alerted once rather than on every check.
 	// Guarded by mu.
@@ -56,6 +61,11 @@ type runningSkill struct {
 	cancel context.CancelFunc
 	done   chan struct{} // closed when the watcher's alert channel closes
 	config map[string]interface{}
+
+	// stopping is set when the watcher was told to stop but didn't exit in
+	// time. Its skill isn't configured or started again until it has: each
+	// skill is one object, which the old watcher is still using.
+	stopping atomic.Bool
 }
 
 // exited reports whether the watcher has stopped
@@ -108,7 +118,21 @@ func newSkillManager(ctx context.Context, registry *skills.Registry, bus chan<- 
 func (m *skillManager) apply(configs []skills.SkillConfig) reloadResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.configs = configs
+	return m.applyLocked()
+}
 
+// reapply applies the last configs again, once a watcher that was slow to
+// stop has exited and its skill can be started
+func (m *skillManager) reapply() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	log.Printf("Skills: %s", m.applyLocked())
+}
+
+// applyLocked makes the running watchers match m.configs. Caller holds mu.
+func (m *skillManager) applyLocked() reloadResult {
+	configs := m.configs
 	var res reloadResult
 
 	// A watcher that died on its own is started again, like a newly enabled skill
@@ -135,12 +159,24 @@ func (m *skillManager) apply(configs []skills.SkillConfig) reloadResult {
 		skill, _ := m.registry.Get(id)
 		cfg, keep := want[id]
 		switch {
+		case r.stopping.Load():
+			// Still winding down from an earlier reload; reapply starts it
+			// again once it has
+			if keep {
+				res.failed = append(res.failed, skill.Name())
+			}
 		case !keep:
-			m.stop(skill, r)
+			if !m.stop(skill, r) {
+				res.failed = append(res.failed, skill.Name())
+				continue
+			}
 			skill.SetEnabled(false)
 			res.stopped = append(res.stopped, skill.Name())
 		case !reflect.DeepEqual(cfg.Config, r.config):
-			m.stop(skill, r)
+			if !m.stop(skill, r) {
+				res.failed = append(res.failed, skill.Name())
+				continue
+			}
 			if m.start(skill, cfg) {
 				res.restarted = append(res.restarted, skill.Name())
 			} else {
@@ -210,7 +246,13 @@ func (m *skillManager) start(skill skills.Skill, cfg skills.SkillConfig) bool {
 	r := &runningSkill{cancel: cancel, done: make(chan struct{}), config: cfg.Config}
 	m.running[skill.ID()] = r
 	go func() {
-		defer close(r.done)
+		defer func() {
+			close(r.done)
+			if r.stopping.Load() && m.ctx.Err() == nil {
+				log.Printf("Watcher for skill #%d %s has now stopped", skill.ID(), skill.Name())
+				go m.reapply()
+			}
+		}()
 		forwardAlerts(m.ctx, alerts, m.bus)
 
 		// The watcher closed its channel without being stopped, e.g. the log
@@ -238,16 +280,25 @@ func (m *skillManager) start(skill skills.Skill, cfg skills.SkillConfig) bool {
 }
 
 // stop cancels a skill's watcher and waits for it to exit so it can be safely
-// reconfigured. Caller holds mu.
-func (m *skillManager) stop(skill skills.Skill, r *runningSkill) {
+// reconfigured, reporting whether it did. One that doesn't exit in time is
+// left marked as stopping; reconfiguring it then would race with the watcher
+// still using it. Caller holds mu.
+func (m *skillManager) stop(skill skills.Skill, r *runningSkill) bool {
 	r.cancel()
 	select {
 	case <-r.done:
 	case <-time.After(watcherStopTimeout):
-		log.Printf("Warning: watcher for skill %s did not exit within %v", skill.Name(), watcherStopTimeout)
+		r.stopping.Store(true)
+		// The watcher closes done before it looks at stopping, so one that
+		// exited just now has either been seen here or will reapply itself
+		if !r.exited() {
+			log.Printf("Warning: watcher for skill %s did not exit within %v; it will be restarted once it has", skill.Name(), watcherStopTimeout)
+			return false
+		}
 	}
 	delete(m.running, skill.ID())
 	log.Printf("Stopped watcher for skill #%d: %s", skill.ID(), skill.Name())
+	return true
 }
 
 // runningNames returns the names of the skills whose watchers are running
@@ -256,7 +307,7 @@ func (m *skillManager) runningNames() []string {
 	defer m.mu.Unlock()
 	names := make([]string, 0, len(m.running))
 	for id, r := range m.running {
-		if r.exited() {
+		if r.exited() || r.stopping.Load() {
 			continue
 		}
 		if skill, ok := m.registry.Get(id); ok {
