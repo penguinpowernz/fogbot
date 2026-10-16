@@ -27,17 +27,24 @@ func GetGlobalTailer() (*Tailer, error) {
 	return globalTailer, nil
 }
 
-// StartGlobalTailer ensures the global tailer is started
-// Safe to call multiple times - only starts once
-func StartGlobalTailer() error {
+// StartGlobalTailer ensures the global tailer is started and returns it.
+// Safe to call multiple times - only starts once. A tailer that stopped
+// reading on its own is replaced, so watchers restarted after it died (their
+// channels are closed when it does) get one that works.
+func StartGlobalTailer() (*Tailer, error) {
 	tailerMu.Lock()
 	defer tailerMu.Unlock()
+
+	if globalTailer != nil && globalTailer.Dead() {
+		globalTailer = nil
+		tailerStarted = false
+	}
 
 	// Get or create the tailer
 	if globalTailer == nil {
 		t, err := NewTailer("")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		globalTailer = t
 	}
@@ -45,12 +52,12 @@ func StartGlobalTailer() error {
 	// Only start if not already started
 	if !tailerStarted {
 		if err := globalTailer.Start(); err != nil {
-			return err
+			return nil, err
 		}
 		tailerStarted = true
 	}
 
-	return nil
+	return globalTailer, nil
 }
 
 // StopGlobalTailer stops the global tailer if it exists
