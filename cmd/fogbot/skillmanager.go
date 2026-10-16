@@ -39,6 +39,16 @@ type runningSkill struct {
 	config map[string]interface{}
 }
 
+// exited reports whether the watcher has stopped
+func (r *runningSkill) exited() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // reloadResult lists skill names affected by apply
 type reloadResult struct {
 	started, stopped, restarted, failed []string
@@ -81,6 +91,18 @@ func (m *skillManager) apply(configs []skills.SkillConfig) reloadResult {
 	defer m.mu.Unlock()
 
 	var res reloadResult
+
+	// A watcher that died on its own is started again, like a newly enabled skill
+	for id, r := range m.running {
+		if r.exited() {
+			r.cancel()
+			if skill, ok := m.registry.Get(id); ok {
+				skill.SetEnabled(false)
+			}
+			delete(m.running, id)
+		}
+	}
+
 	want := make(map[int]skills.SkillConfig)
 	for _, cfg := range configs {
 		if _, ok := m.registry.Get(cfg.ID); !ok {
@@ -167,6 +189,25 @@ func (m *skillManager) start(skill skills.Skill, cfg skills.SkillConfig) bool {
 	go func() {
 		defer close(r.done)
 		forwardAlerts(m.ctx, alerts, m.bus)
+
+		// The watcher closed its channel without being stopped, e.g. the log
+		// it tails became unreadable or the D-Bus connection dropped. Its
+		// sensor is now blind, which must not go unnoticed.
+		if ctx.Err() == nil {
+			log.Printf("Watcher for skill #%d %s exited unexpectedly", skill.ID(), skill.Name())
+			m.send(notifier.Alert{
+				Severity:    notifier.SeverityContact,
+				SkillID:     skill.ID(),
+				SkillName:   skill.Name(),
+				Title:       "[DEADMAN] Sensor Stopped",
+				Activity:    fmt.Sprintf("The %s watcher stopped unexpectedly and is no longer detecting anything", skill.Name()),
+				Location:    m.hostname,
+				Unit:        "see the fogbot daemon log for the cause; restart it with: systemctl reload fogbot",
+				Time:        time.Now(),
+				Equipment:   "skill-manager",
+				Acknowledge: true,
+			})
+		}
 	}()
 
 	log.Printf("Started watcher for skill #%d: %s", skill.ID(), skill.Name())
@@ -191,7 +232,10 @@ func (m *skillManager) runningNames() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	names := make([]string, 0, len(m.running))
-	for id := range m.running {
+	for id, r := range m.running {
+		if r.exited() {
+			continue
+		}
 		if skill, ok := m.registry.Get(id); ok {
 			names = append(names, skill.Name())
 		}

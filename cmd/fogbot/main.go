@@ -271,7 +271,23 @@ func runDaemon(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Printf("Failed to start selfwatch: %v", err)
 		} else {
-			go forwardAlerts(ctx, selfwatchChan, alertBus)
+			go func() {
+				forwardAlerts(ctx, selfwatchChan, alertBus)
+				if ctx.Err() == nil {
+					log.Printf("Selfwatch stopped unexpectedly")
+					skillMgr.send(notifier.Alert{
+						Severity:    notifier.SeverityContact,
+						SkillID:     999,
+						SkillName:   "selfwatch",
+						Title:       "[DEADMAN] Sensor Stopped",
+						Activity:    "fogbot is no longer watching its own files for tampering",
+						Unit:        "see the fogbot daemon log for the cause; restart with: systemctl restart fogbot",
+						Time:        time.Now(),
+						Equipment:   "inotify",
+						Acknowledge: true,
+					})
+				}
+			}()
 			log.Printf("Started selfwatch monitoring")
 		}
 	}

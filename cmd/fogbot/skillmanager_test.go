@@ -150,3 +150,87 @@ func TestReloadResult_String(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// dyingSkill's watcher stops on its own as soon as die is closed, like a tail
+// whose log became unreadable
+type dyingSkill struct {
+	stubSkill
+	die chan struct{}
+}
+
+func (s *dyingSkill) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
+	ch := make(chan notifier.Alert)
+	die := s.die
+	go func() {
+		select {
+		case <-die:
+		case <-ctx.Done():
+		}
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func waitAlert(t *testing.T, bus <-chan notifier.Alert) notifier.Alert {
+	t.Helper()
+	select {
+	case a := <-bus:
+		return a
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an alert")
+	}
+	return notifier.Alert{}
+}
+
+// The bug: a watcher that exited by itself left its skill listed as running,
+// with no alert, so a blind sensor looked healthy in /status
+func TestSkillManager_DeadWatcherAlertsAndRestartsOnReload(t *testing.T) {
+	a := &dyingSkill{stubSkill: stubSkill{id: 1, name: "a"}, die: make(chan struct{})}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+	close(a.die)
+
+	if alert := waitAlert(t, bus); alert.Title != "[DEADMAN] Sensor Stopped" || alert.Severity != notifier.SeverityContact {
+		t.Fatalf("unexpected alert %+v", alert)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(m.runningNames()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("dead watcher still listed as running: %v", m.runningNames())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	a.die = make(chan struct{})
+	if res := m.apply([]skills.SkillConfig{cfg(1, nil)}); len(res.started) != 1 {
+		t.Fatalf("reload should start the dead skill again, got %s", res)
+	}
+	if got := m.runningNames(); len(got) != 1 {
+		t.Fatalf("expected a running again, got %v", got)
+	}
+}
+
+func TestSkillManager_StoppedWatcherDoesNotAlert(t *testing.T) {
+	a := &stubSkill{id: 1, name: "a"}
+	reg := skills.NewRegistry()
+	reg.Register(a)
+	bus := make(chan notifier.Alert, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newSkillManager(ctx, reg, bus, "host")
+
+	m.apply([]skills.SkillConfig{cfg(1, nil)})
+	m.apply(nil)
+	select {
+	case alert := <-bus:
+		t.Fatalf("disabling a skill raised %+v", alert)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
