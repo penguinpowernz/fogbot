@@ -28,9 +28,11 @@ type Engine struct {
 }
 
 type alertState struct {
-	firstSeen time.Time
-	lastSeen  time.Time
-	count     int
+	firstSeen  time.Time
+	lastSeen   time.Time
+	count      int
+	suppressed int            // alerts held back this window, reported by Digests
+	last       notifier.Alert // the latest suppressed alert
 }
 
 // contactState tracks one kind of CONTACT alert over a window
@@ -85,44 +87,38 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 		return e.processContact(alert, time.Now()), false, 0
 	}
 
-	// Generate fingerprint for this alert type
+	now := time.Now()
 	fingerprint := e.fingerprint(alert)
 
 	state, exists := e.alerts[fingerprint]
-	if !exists {
-		// First time seeing this alert
-		state = &alertState{
-			firstSeen: time.Now(),
-			lastSeen:  time.Now(),
-			count:     1,
+	if !exists || now.Sub(state.firstSeen) >= e.window {
+		// A new window. Alerts still held back from the last one go out with
+		// this one, in case Digests hasn't reported them yet.
+		held := 0
+		if exists {
+			held = state.suppressed
 		}
-		e.alerts[fingerprint] = state
+		e.alerts[fingerprint] = &alertState{firstSeen: now, lastSeen: now, count: 1}
+		if held > 0 {
+			return true, true, held + 1
+		}
 		return true, false, 0
 	}
 
-	// Update state
-	state.lastSeen = time.Now()
+	state.lastSeen = now
 	state.count++
-
-	// Check if we're within the burst window
-	if time.Since(state.firstSeen) < e.window {
-		if state.count <= e.maxBurst {
-			// Within burst limit, send it
-			return true, false, 0
-		} else {
-			// Exceeded burst limit, suppress
-			e.suppressed++
-			return false, false, 0
-		}
+	if state.count <= e.maxBurst {
+		return true, false, 0
 	}
 
-	// Window expired, send digest and reset
-	digestCount := state.count
-	state.firstSeen = time.Now()
-	state.lastSeen = time.Now()
-	state.count = 1
-
-	return true, true, digestCount
+	// Exceeded the burst limit. Held back, not dropped: Digests reports these
+	// when the window ends. Before, they were only counted into a digest sent
+	// with the next alert of the kind, so if none came they were never
+	// reported, and the 11th package of an install went unseen.
+	state.suppressed++
+	state.last = alert
+	e.suppressed++
+	return false, false, 0
 }
 
 // processContact reports whether a CONTACT alert is sent now.
@@ -168,9 +164,9 @@ func (e *Engine) contactKey(alert notifier.Alert) string {
 	return fmt.Sprintf("%d:%s", alert.SkillID, alert.Title)
 }
 
-// Digests returns a digest for each kind of CONTACT alert whose window has
-// ended with alerts suppressed, and starts a new window for it. Call it
-// regularly; suppressed CONTACT alerts are only reported through it.
+// Digests returns a digest for each kind of alert whose window has ended with
+// alerts suppressed, and starts a new window for it. Call it regularly;
+// suppressed alerts are only reported through it.
 func (e *Engine) Digests(now time.Time) []notifier.Alert {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -185,23 +181,38 @@ func (e *Engine) Digests(now time.Time) []notifier.Alert {
 			continue
 		}
 
-		d := st.last
-		d.Title = fmt.Sprintf("%s (digest: %d more)", d.Title, st.suppressed)
-		d.Size = fmt.Sprintf("%d events", st.suppressed)
-		d.Activity = fmt.Sprintf("%d more alerts like this in %v, held back to keep alerts flowing; latest: %s", st.suppressed, e.window, d.Activity)
+		d := e.digest(st.last, st.suppressed, now)
 		locations := strings.Join(st.locations, ", ")
 		if st.suppressed > len(st.locations) {
 			locations += ", …"
 		}
 		d.Location = locations
-		d.Time = now
 		digests = append(digests, d)
 
 		// The next alert of this kind starts a fresh window, so one arriving
 		// after a flood has stopped isn't held back
 		delete(e.contacts, key)
 	}
+
+	// Other alerts are grouped by location too, so the digest keeps it
+	for fp, st := range e.alerts {
+		if st.suppressed == 0 || now.Sub(st.firstSeen) < e.window {
+			continue
+		}
+		digests = append(digests, e.digest(st.last, st.suppressed, now))
+		delete(e.alerts, fp)
+	}
 	return digests
+}
+
+// digest summarises suppressed alerts, of which last is the latest
+func (e *Engine) digest(last notifier.Alert, suppressed int, now time.Time) notifier.Alert {
+	d := last
+	d.Title = fmt.Sprintf("%s (digest: %d more)", d.Title, suppressed)
+	d.Size = fmt.Sprintf("%d events", suppressed)
+	d.Activity = fmt.Sprintf("%d more alerts like this in %v, held back to keep alerts flowing; latest: %s", suppressed, e.window, d.Activity)
+	d.Time = now
+	return d
 }
 
 // fingerprint generates a unique key for alert deduplication
@@ -231,7 +242,8 @@ func (e *Engine) cleanup() {
 
 	cutoff := time.Now().Add(-2 * e.window)
 	for fp, state := range e.alerts {
-		if state.lastSeen.Before(cutoff) {
+		// Held-back alerts wait for Digests
+		if state.lastSeen.Before(cutoff) && state.suppressed == 0 {
 			delete(e.alerts, fp)
 		}
 	}

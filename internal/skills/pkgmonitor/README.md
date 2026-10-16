@@ -21,8 +21,9 @@ dpkg's action lines:
 | `remove <pkg> <ver>` | Package Removed | MOVEMENT |
 | `upgrade <pkg> <old> <new>` | Package Upgraded | MOVEMENT |
 
-MOVEMENT alerts are batched into digests, so a large `apt upgrade` arrives as
-one message rather than hundreds.
+MOVEMENT alerts over the dedup burst (`max_burst`, default 10) are batched
+into a digest sent when the window ends, so a large `apt upgrade` arrives as
+a handful of messages rather than hundreds.
 
 ## Requirements
 
