@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/penguinpowernz/fogbot/internal/atomicfile"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 )
 
@@ -193,10 +194,11 @@ func (s *SelfWatch) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 
 			if alert, ok := s.classify(event, hostname); ok {
 				// One write produces several events; report each file once per burst
-				if last, seen := lastAlert[event.Name]; seen && time.Since(last) < ownWriteGrace {
+				name, _ := changedFile(event.Name)
+				if last, seen := lastAlert[name]; seen && time.Since(last) < ownWriteGrace {
 					continue
 				}
-				lastAlert[event.Name] = time.Now()
+				lastAlert[name] = time.Now()
 				alertChan <- alert
 			}
 
@@ -228,6 +230,17 @@ func (s *SelfWatch) rewatch(event fsnotify.Event) {
 	}
 }
 
+// changedFile returns the file an event is about. Files are written atomically
+// (see atomicfile): a temporary file is created next to the real one and
+// renamed over it, so events on the temporary file count as changes to the
+// file it replaces. replacing reports whether that is what happened.
+func changedFile(name string) (file string, replacing bool) {
+	if target, ok := atomicfile.TargetOf(name); ok {
+		return target, true
+	}
+	return name, false
+}
+
 // classify turns an inotify event into an alert, if it warrants one.
 //
 // The binary and config are never written by fogbot, so any change is CONTACT.
@@ -254,19 +267,24 @@ func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Al
 		return notifier.Alert{}, false
 	}
 
-	if isOwnWrite(event.Name) {
+	file, replacing := changedFile(event.Name)
+	if replacing {
+		verb = "replaced"
+	}
+
+	if isOwnWrite(file) {
 		return notifier.Alert{}, false
 	}
 
 	// Only skill YAMLs are loaded from the skill dirs; an editor's swap and
 	// backup files there aren't worth an alert each
-	dir := filepath.Dir(filepath.Clean(event.Name))
+	dir := filepath.Dir(filepath.Clean(file))
 	inSkillDir := s.isSkillDir(dir)
-	if inSkillDir && filepath.Ext(event.Name) != ".yaml" {
+	if inSkillDir && filepath.Ext(file) != ".yaml" {
 		return notifier.Alert{}, false
 	}
 
-	name := filepath.Base(event.Name)
+	name := filepath.Base(file)
 	alert := notifier.Alert{
 		Severity:    notifier.SeverityContact,
 		SkillID:     999, // special ID for selfwatch
@@ -274,7 +292,7 @@ func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Al
 		Title:       "fogbot File Tamper Detected",
 		Size:        "1 file",
 		Activity:    fmt.Sprintf("Unexpected change: %s %s", name, verb),
-		Location:    event.Name,
+		Location:    file,
 		Unit:        "filesystem",
 		Time:        time.Now(),
 		Equipment:   "inotify",
@@ -282,7 +300,7 @@ func (s *SelfWatch) classify(event fsnotify.Event, hostname string) (notifier.Al
 		Acknowledge: true,
 	}
 
-	if s.stateDir != "" && filepath.Dir(filepath.Clean(event.Name)) == filepath.Clean(s.stateDir) {
+	if s.stateDir != "" && dir == filepath.Clean(s.stateDir) {
 		alert.Severity = notifier.SeverityMovement
 		alert.Title = "fogbot State Changed"
 		alert.Activity = fmt.Sprintf("%s %s outside the fogbot daemon", name, verb)

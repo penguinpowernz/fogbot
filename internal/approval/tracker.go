@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/penguinpowernz/fogbot/internal/atomicfile"
 )
 
 // ApprovedCommand represents a command that has been approved by the user
@@ -187,7 +189,7 @@ func (t *Tracker) save() error {
 		return fmt.Errorf("failed to marshal approvals: %w", err)
 	}
 
-	if err := os.WriteFile(t.dataFile, data, 0600); err != nil {
+	if err := atomicfile.WriteFile(t.dataFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to write approvals: %w", err)
 	}
 

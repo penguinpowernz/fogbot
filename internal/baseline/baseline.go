@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/penguinpowernz/fogbot/internal/atomicfile"
 	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
@@ -123,7 +124,7 @@ func (m *Manager) SavePendingSuid(baseline *Baseline) error {
 	}
 
 	selfwatch.ExpectWrite(path)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := atomicfile.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write pending baseline: %w", err)
 	}
 
@@ -191,7 +192,7 @@ func (m *Manager) approveSuid(approvedBy string, reviewed *Baseline) error {
 		return fmt.Errorf("failed to marshal baseline: %w", err)
 	}
 
-	if err := os.WriteFile(activePath, data, 0600); err != nil {
+	if err := atomicfile.WriteFile(activePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write active baseline: %w", err)
 	}
 

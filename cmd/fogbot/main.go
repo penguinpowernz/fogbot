@@ -175,7 +175,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	// Create state directory
-	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
 		log.Fatalf("Failed to create state directory: %v", err)
 	}
 

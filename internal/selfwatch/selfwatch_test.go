@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/penguinpowernz/fogbot/internal/atomicfile"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
 )
 
@@ -59,6 +60,33 @@ func TestOwnWritesAreNotReported(t *testing.T) {
 	ExpectWrite(path)
 	os.WriteFile(path, []byte(`{"authorized_chat":"1"}`), 0600)
 	none(t, ch)
+}
+
+func TestOwnAtomicWritesAreNotReported(t *testing.T) {
+	stateDir, _, ch := start(t)
+	path := filepath.Join(stateDir, "state.json")
+
+	ExpectWrite(path)
+	if err := atomicfile.WriteFile(path, []byte(`{"authorized_chat":"1"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	none(t, ch)
+}
+
+func TestForeignAtomicWriteIsOneAlertAboutTheRealFile(t *testing.T) {
+	stateDir, _, ch := start(t)
+	path := filepath.Join(stateDir, "approved-commands.json")
+
+	if err := atomicfile.WriteFile(path, []byte(`[]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := next(t, ch)
+	if a.Location != path || a.Severity != notifier.SeverityMovement ||
+		a.Unit != "expected only after running: fogbot skill enable/disable" {
+		t.Fatalf("expected MOVEMENT about approved-commands.json, got %+v", a)
+	}
+	none(t, ch) // the temporary file's events are collapsed into the same alert
 }
 
 func TestForeignStateWriteIsContactWhenOnlyDaemonWritesIt(t *testing.T) {

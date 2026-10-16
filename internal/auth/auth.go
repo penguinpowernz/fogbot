@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/penguinpowernz/fogbot/internal/atomicfile"
 	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 )
 
@@ -100,7 +101,7 @@ func (s *State) Save() error {
 func (s *State) saveLocked() error {
 	// Ensure directory exists
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 
@@ -110,7 +111,7 @@ func (s *State) saveLocked() error {
 	}
 
 	selfwatch.ExpectWrite(s.path)
-	return os.WriteFile(s.path, data, 0600)
+	return atomicfile.WriteFile(s.path, data, 0600)
 }
 
 // IsAuthorized checks if a specific chat ID is authorized.
