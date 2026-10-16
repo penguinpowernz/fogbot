@@ -308,6 +308,17 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 		return
 	}
 
+	// The name was relative to an open directory fogbot couldn't look up:
+	// match it against the watched paths by inode instead
+	unresolved := false
+	if event.PathUnresolved {
+		if p, ok := auditlog.ResolvePath(event, f.watchedPaths()); ok {
+			path = p
+		} else {
+			unresolved = true
+		}
+	}
+
 	// Deduplicate: use path+uid+syscall as key
 	// Audit logs generate multiple records per operation
 	dedupeKey := fmt.Sprintf("%s:%s:%s", path, event.UID, event.Syscall)
@@ -347,10 +358,16 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 	}
 
 	// Every watched path is sensitive, so default to CONTACT; a lower configured
-	// default never applies to the auth files themselves
+	// default never applies to the auth files themselves, or to a file that
+	// can't be told apart from them
 	severity := f.severityDefault
-	if severity == "" || strings.HasPrefix(path, "/etc/shadow") || strings.HasPrefix(path, "/etc/sudoers") {
+	if severity == "" || unresolved || strings.HasPrefix(path, "/etc/shadow") || strings.HasPrefix(path, "/etc/sudoers") {
 		severity = notifier.SeverityContact
+	}
+
+	location := filepath.Dir(path)
+	if unresolved {
+		location = unresolvedLocation
 	}
 
 	// Build equipment description with process info
@@ -366,7 +383,7 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 		Title:     "Critical File Access",
 		Size:      "1 file",
 		Activity:  activity,
-		Location:  filepath.Dir(path),
+		Location:  location,
 		Unit:      fmt.Sprintf("uid=%s pid=%s", event.UID, event.PID),
 		Time:      event.Timestamp,
 		Equipment: equip,
@@ -380,11 +397,27 @@ func (f *FileWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifie
 			"comm":      event.Comm,
 			"exe":       event.Exe,
 			"syscall":   event.Syscall,
+			"resolved":  strconv.FormatBool(!unresolved),
 		},
 	}
 
 	log.Printf("[file-watch] Sending alert: %s - %s", alert.Title, alert.Activity)
 	alerts <- alert
+}
+
+// unresolvedLocation is the alert location for a file named relative to an
+// open directory that couldn't be identified
+const unresolvedLocation = "unknown directory (opened by file descriptor; check the audit log)"
+
+// watchedPaths returns the configured watch paths, sorted
+func (f *FileWatch) watchedPaths() []string {
+	watchPaths, _ := extractPathPermsMap(f.config, "watch_paths")
+	paths := make([]string, 0, len(watchPaths))
+	for p := range watchPaths {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // extractPathPermsMap extracts the watch_paths map from config.

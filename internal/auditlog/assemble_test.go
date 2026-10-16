@@ -94,7 +94,7 @@ func TestHandleLine_DirWatchPicksCreatedEntry(t *testing.T) {
 func TestHandleLine_HexEncodedNameDecoded(t *testing.T) {
 	tl := newTestTailer("fb-dir-540")
 	events := feed(tl, time.Now(),
-		`type=SYSCALL msg=audit(1.0:9): arch=c000003e syscall=257 success=yes uid=0 comm="touch" key="fb-dir-540"`,
+		`type=SYSCALL msg=audit(1.0:9): arch=c000003e syscall=257 success=yes a0=ffffff9c uid=0 comm="touch" key="fb-dir-540"`,
 		`type=CWD msg=audit(1.0:9): cwd="/tmp"`,
 		`type=PATH msg=audit(1.0:9): item=1 name=6120622E7368 nametype=CREATE mode=0100644`,
 		`type=EOE msg=audit(1.0:9):`,

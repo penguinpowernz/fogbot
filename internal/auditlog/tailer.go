@@ -37,6 +37,19 @@ type Event struct {
 	Exit        string
 	RawMessage  string
 	Metadata    map[string]string // Additional key=value pairs
+
+	// NameType is the chosen PATH record's nametype: CREATE, DELETE, NORMAL...
+	NameType string
+
+	// Inode and Dev identify the object acted on, and ParentInode and
+	// ParentDev its directory, as the PATH records give them, for ResolvePath
+	Inode, Dev             string
+	ParentInode, ParentDev string
+
+	// PathUnresolved means the PATH record named the object relative to an
+	// open directory (openat(dirfd, "shadow") and the like) that couldn't be
+	// found. Path is then only that relative name; see ResolvePath.
+	PathUnresolved bool
 }
 
 // Subscriber receives events matching its filter key
@@ -93,6 +106,7 @@ var x86_64Syscalls = map[string]string{
 	"91": "fchmod", "92": "chown", "93": "fchown", "94": "lchown", "257": "openat",
 	"258": "mkdirat", "260": "fchownat", "263": "unlinkat", "264": "renameat",
 	"265": "linkat", "266": "symlinkat", "268": "fchmodat", "316": "renameat2",
+	"133": "mknod", "259": "mknodat", "437": "openat2", "452": "fchmodat2",
 }
 
 // NewTailer creates a new audit log tailer
@@ -301,10 +315,20 @@ func (p *pendingEvent) finish() *Event {
 	}
 
 	if chosen != nil {
+		e.NameType = chosen["nametype"]
+		e.Inode, e.Dev = chosen["inode"], chosen["dev"]
+		if parent := p.parentOf(e.NameType); parent != nil {
+			e.ParentInode, e.ParentDev = parent["inode"], parent["dev"]
+		}
+
 		name := chosen["name"]
 		if name != "" && name != "(null)" {
-			if !filepath.IsAbs(name) && e.Cwd != "" {
-				name = filepath.Join(e.Cwd, name)
+			if !filepath.IsAbs(name) {
+				if dir, ok := e.relativeTo(name); ok {
+					name = filepath.Join(dir, name)
+				} else {
+					e.PathUnresolved = true
+				}
 			}
 			e.Path = filepath.Clean(name)
 			e.Name = filepath.Base(e.Path)
@@ -315,6 +339,106 @@ func (p *pendingEvent) finish() *Event {
 	}
 
 	return e
+}
+
+// parentOf returns the PARENT record for the record of nametype. A rename
+// has two: the old directory first, then the new one, which holds the CREATE.
+func (p *pendingEvent) parentOf(nametype string) map[string]string {
+	var parents []map[string]string
+	for _, rec := range p.paths {
+		if rec["nametype"] == "PARENT" {
+			parents = append(parents, rec)
+		}
+	}
+	switch {
+	case len(parents) == 0:
+		return nil
+	case nametype == "CREATE":
+		return parents[len(parents)-1]
+	default:
+		return parents[0]
+	}
+}
+
+// procRoot is where relativeTo looks up open directories. A variable so
+// tests can fake it.
+var procRoot = "/proc"
+
+// dirfdArgs gives, for the *at syscalls, which argument holds the directory
+// a relative name is looked up from: by default, and for the CREATE record
+// where the new name has its own directory argument
+var dirfdArgs = map[string]struct{ normal, create string }{
+	"openat": {"a0", "a0"}, "openat2": {"a0", "a0"}, "mkdirat": {"a0", "a0"},
+	"mknodat": {"a0", "a0"}, "fchownat": {"a0", "a0"}, "unlinkat": {"a0", "a0"},
+	"fchmodat": {"a0", "a0"}, "fchmodat2": {"a0", "a0"}, "utimensat": {"a0", "a0"},
+	"newfstatat": {"a0", "a0"}, "faccessat": {"a0", "a0"}, "faccessat2": {"a0", "a0"},
+	"readlinkat": {"a0", "a0"}, "execveat": {"a0", "a0"},
+	"renameat": {"a0", "a2"}, "renameat2": {"a0", "a2"}, "linkat": {"a0", "a2"},
+	"symlinkat": {"a1", "a1"},
+}
+
+// relativeTo returns the directory the chosen PATH record's relative name is
+// relative to. That is the working directory, unless the syscall was given a
+// directory file descriptor: the audit record doesn't say which directory
+// that is, so it is looked up in /proc while the process is still there.
+// Joining the name to the working directory instead reported
+// openat(fd of /etc, "shadow") run from /tmp as an access to /tmp/shadow.
+func (e *Event) relativeTo(name string) (string, bool) {
+	arg := "a0"
+	args, isAt := dirfdArgs[e.Syscall]
+	switch {
+	case isAt && e.NameType == "CREATE":
+		arg = args.create
+	case isAt:
+		arg = args.normal
+	case !isNumber(e.Syscall):
+		// A syscall without a directory argument, such as open or rename
+		return e.Cwd, e.Cwd != ""
+	}
+	// An unrecognised syscall (number only) is taken as an *at one: if a0 is
+	// AT_FDCWD it is, and if not the name can still be resolved by inode
+
+	fd, ok := parseFd(e.Metadata[arg])
+	if !ok {
+		return "", false
+	}
+	if fd == atFdcwd {
+		return e.Cwd, e.Cwd != ""
+	}
+
+	dir, err := os.Readlink(fmt.Sprintf("%s/%s/fd/%d", procRoot, e.PID, fd))
+	if err != nil || !filepath.IsAbs(dir) || strings.HasSuffix(dir, " (deleted)") {
+		return "", false
+	}
+	// The process may have exited and its PID been reused, or closed the fd
+	// and opened another: only trust a directory that checks out
+	switch {
+	case e.ParentInode != "":
+		ok = SameFile(dir, e.ParentInode, e.ParentDev)
+	case e.Inode != "" && e.NameType != "DELETE":
+		ok = SameFile(filepath.Join(dir, name), e.Inode, e.Dev)
+	default:
+		ok = false
+	}
+	return dir, ok
+}
+
+// atFdcwd is AT_FDCWD, the dirfd meaning "the working directory"
+const atFdcwd = -100
+
+// parseFd parses a syscall argument, which audit logs in hex, as a file
+// descriptor (an int, so only the low 32 bits count)
+func parseFd(arg string) (int32, bool) {
+	n, err := strconv.ParseUint(arg, 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int32(uint32(n)), true
+}
+
+func isNumber(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
 }
 
 // ruleKey returns the record's key= field. It walks the line field by field

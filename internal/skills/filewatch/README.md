@@ -35,6 +35,15 @@ log line; create the directory and enable again. A path that doesn't exist
 itself is fine: auditd watches it and alerts when it is created. `fogbot skill
 enable` prints the `touch` commands to create missing canaries.
 
+A program can name a file relative to a directory it has open
+(`openat(fd, "shadow")`) rather than to its working directory. fogbot looks
+that directory up while the process is still running, or else matches the
+file's inode against `watch_paths`. If neither works, the alert is CONTACT
+and says the directory is unknown instead of guessing.
+
+If audit events arrive faster than fogbot can check them, the ones it had to
+skip are counted and reported in a CONTACT "Audit Events Dropped" alert.
+
 ## Requirements
 
 - auditd
