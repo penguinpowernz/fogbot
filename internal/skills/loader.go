@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -277,14 +278,17 @@ func LoadEnabledConfigs(basePath string) ([]SkillConfig, error) {
 			continue
 		}
 
-		// Read and parse the YAML
+		// Read and parse the YAML. A skill that can't be loaded doesn't run, so
+		// say why: otherwise a typo in its YAML turns a sensor off unnoticed.
 		data, err := os.ReadFile(path)
 		if err != nil {
+			log.Printf("Warning: enabled skill %s not loaded: %v", entry.Name(), err)
 			continue
 		}
 
 		var cfg SkillConfig
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Printf("Warning: enabled skill %s not loaded: parsing YAML: %v", entry.Name(), err)
 			continue
 		}
 
