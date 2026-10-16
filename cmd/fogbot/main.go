@@ -260,6 +260,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	}
 
 	log.Printf("Skills: %s", skillMgr.apply(enabledSkillConfigs))
+	go skillMgr.watchSystemState(stateCheckInterval)
 
 	// Start selfwatch to monitor fogbot's own files
 	binaryPath, _ := os.Executable()
