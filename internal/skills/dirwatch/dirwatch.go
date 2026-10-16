@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -203,10 +202,9 @@ func (d *DirWatch) CheckSystemState() (bool, error) {
 	// Check if all expected paths are monitored with our rule key
 	// Each rule should be on its own line
 	for _, path := range watchPaths {
-		// Look for lines like: -w /usr/local/bin/ -p wa -k fb-dir-540
-		// Match the exact rule pattern to avoid false positives
-		rulePattern := fmt.Sprintf("-w %s -p wa -k %s", path, ruleKey)
-		if !strings.Contains(rulesOutput, rulePattern) {
+		// auditctl lists "-w /usr/local/bin/ -p wa" as "-w /usr/local/bin -p wa",
+		// so the configured path can't be searched for as written
+		if !skills.AuditWatchListed(rulesOutput, path, "wa", ruleKey) {
 			return false, nil
 		}
 	}

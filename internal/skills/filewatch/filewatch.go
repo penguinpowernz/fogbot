@@ -195,9 +195,8 @@ func (f *FileWatch) CheckSystemState() (bool, error) {
 	}
 
 	for path, perms := range watchPaths {
-		// Look for exact match: -w /etc/passwd -p rwa -k fb-file-500
-		rulePattern := fmt.Sprintf("-w %s -p %s -k %s", path, perms, ruleKey)
-		if !strings.Contains(rulesOutput, rulePattern) {
+		// Look for the rule as auditctl lists it: -w /etc/passwd -p rwa -k fb-file-500
+		if !skills.AuditWatchListed(rulesOutput, path, perms, ruleKey) {
 			return false, nil
 		}
 	}
