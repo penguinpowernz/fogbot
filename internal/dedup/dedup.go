@@ -3,6 +3,7 @@ package dedup
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,10 +12,15 @@ import (
 
 // Engine handles alert deduplication and rate limiting
 type Engine struct {
-	mu         sync.RWMutex
-	window     time.Duration
-	maxBurst   int
-	alerts     map[string]*alertState
+	mu       sync.RWMutex
+	window   time.Duration
+	maxBurst int
+	alerts   map[string]*alertState
+
+	// CONTACT alerts are rate limited separately, see processContact
+	contactBurst int
+	contacts     map[string]*contactState
+
 	ticker     *time.Ticker
 	stopClean  chan struct{}
 	closeOnce  sync.Once
@@ -27,8 +33,21 @@ type alertState struct {
 	count     int
 }
 
-// NewEngine creates a new deduplication engine
-func NewEngine(window time.Duration, maxBurst int) *Engine {
+// contactState tracks one kind of CONTACT alert over a window
+type contactState struct {
+	start      time.Time
+	sent       int
+	suppressed int
+	last       notifier.Alert // the latest suppressed alert
+	locations  []string       // distinct locations of suppressed alerts, capped
+}
+
+// maxDigestLocations caps how many locations a CONTACT digest lists
+const maxDigestLocations = 5
+
+// NewEngine creates a new deduplication engine. Up to contactBurst CONTACT
+// alerts of each kind are sent per window, the rest summarised in a digest.
+func NewEngine(window time.Duration, maxBurst, contactBurst int) *Engine {
 	// time.NewTicker panics on a non-positive interval
 	if window <= 0 {
 		window = 5 * time.Minute
@@ -36,13 +55,18 @@ func NewEngine(window time.Duration, maxBurst int) *Engine {
 	if maxBurst <= 0 {
 		maxBurst = 10
 	}
+	if contactBurst <= 0 {
+		contactBurst = 20
+	}
 
 	e := &Engine{
-		window:    window,
-		maxBurst:  maxBurst,
-		alerts:    make(map[string]*alertState),
-		ticker:    time.NewTicker(window),
-		stopClean: make(chan struct{}),
+		window:       window,
+		maxBurst:     maxBurst,
+		contactBurst: contactBurst,
+		contacts:     make(map[string]*contactState),
+		alerts:       make(map[string]*alertState),
+		ticker:       time.NewTicker(window),
+		stopClean:    make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -57,9 +81,8 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// RED (CONTACT) alerts always fire immediately
 	if alert.Severity == notifier.SeverityContact {
-		return true, false, 0
+		return e.processContact(alert, time.Now()), false, 0
 	}
 
 	// Generate fingerprint for this alert type
@@ -100,6 +123,85 @@ func (e *Engine) Process(alert notifier.Alert) (bool, bool, int) {
 	state.count = 1
 
 	return true, true, digestCount
+}
+
+// processContact reports whether a CONTACT alert is sent now.
+//
+// CONTACT alerts used to bypass rate limiting entirely, so anything that could
+// cause a stream of them buried the ones that mattered: a spoofed SYN flood to
+// tripwire ports alerts once per source address, and Telegram rate limits a
+// bot sending more than about one message a second, so every later alert
+// (from any skill) queued behind retries. Now the first contactBurst of each
+// kind per window go out at once, as before, and the rest are folded into one
+// digest sent when the window ends (see Digests). None are dropped unreported.
+func (e *Engine) processContact(alert notifier.Alert, now time.Time) bool {
+	key := e.contactKey(alert)
+	st, ok := e.contacts[key]
+	if !ok {
+		st = &contactState{start: now}
+		e.contacts[key] = st
+	}
+	if st.sent < e.contactBurst {
+		st.sent++
+		return true
+	}
+
+	st.suppressed++
+	e.suppressed++
+	st.last = alert
+	if len(st.locations) < maxDigestLocations && alert.Location != "" {
+		seen := false
+		for _, l := range st.locations {
+			seen = seen || l == alert.Location
+		}
+		if !seen {
+			st.locations = append(st.locations, alert.Location)
+		}
+	}
+	return false
+}
+
+// contactKey groups CONTACT alerts by skill and title. Location is left out:
+// a flood varies it (one alert per source address), which is what made each
+// alert look new.
+func (e *Engine) contactKey(alert notifier.Alert) string {
+	return fmt.Sprintf("%d:%s", alert.SkillID, alert.Title)
+}
+
+// Digests returns a digest for each kind of CONTACT alert whose window has
+// ended with alerts suppressed, and starts a new window for it. Call it
+// regularly; suppressed CONTACT alerts are only reported through it.
+func (e *Engine) Digests(now time.Time) []notifier.Alert {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var digests []notifier.Alert
+	for key, st := range e.contacts {
+		if now.Sub(st.start) < e.window {
+			continue
+		}
+		if st.suppressed == 0 {
+			delete(e.contacts, key)
+			continue
+		}
+
+		d := st.last
+		d.Title = fmt.Sprintf("%s (digest: %d more)", d.Title, st.suppressed)
+		d.Size = fmt.Sprintf("%d events", st.suppressed)
+		d.Activity = fmt.Sprintf("%d more alerts like this in %v, held back to keep alerts flowing; latest: %s", st.suppressed, e.window, d.Activity)
+		locations := strings.Join(st.locations, ", ")
+		if st.suppressed > len(st.locations) {
+			locations += ", …"
+		}
+		d.Location = locations
+		d.Time = now
+		digests = append(digests, d)
+
+		// The next alert of this kind starts a fresh window, so one arriving
+		// after a flood has stopped isn't held back
+		delete(e.contacts, key)
+	}
+	return digests
 }
 
 // fingerprint generates a unique key for alert deduplication

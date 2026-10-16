@@ -211,7 +211,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	defer cancel()
 
 	// Initialize dedup engine
-	dedupEngine := dedup.NewEngine(cfg.Dedup.Window, cfg.Dedup.MaxBurst)
+	dedupEngine := dedup.NewEngine(cfg.Dedup.Window, cfg.Dedup.MaxBurst, cfg.Dedup.ContactBurst)
 	defer dedupEngine.Close()
 
 	// Initialize baseline manager
@@ -633,10 +633,19 @@ func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Not
 // a notifier alerts are only logged, but the bus is still drained so watchers
 // never block.
 func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
+	// Suppressed CONTACT alerts are only reported through these digests
+	digestTicker := time.NewTicker(digestInterval)
+	defer digestTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
+		case now := <-digestTicker.C:
+			for _, digest := range dedupEngine.Digests(now) {
+				deliverAlert(ctx, digest, notif, hostname)
+			}
 
 		case alert := <-bus:
 			shouldSend, isDigest, digestCount := dedupEngine.Process(alert)
@@ -648,17 +657,26 @@ func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *
 			if isDigest {
 				alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
 			}
-			if alert.Host == "" {
-				alert.Host = hostname
-			}
-			log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
-
-			if notif == nil {
-				continue
-			}
-			if err := notif.Send(ctx, alert); err != nil {
-				log.Printf("Failed to send alert: %v", err)
-			}
+			deliverAlert(ctx, alert, notif, hostname)
 		}
+	}
+}
+
+// digestInterval is how often processAlerts checks for CONTACT digests that
+// are due
+const digestInterval = 10 * time.Second
+
+// deliverAlert logs an alert and sends it, if there is a notifier
+func deliverAlert(ctx context.Context, alert notifier.Alert, notif notifier.Notifier, hostname string) {
+	if alert.Host == "" {
+		alert.Host = hostname
+	}
+	log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
+
+	if notif == nil {
+		return
+	}
+	if err := notif.Send(ctx, alert); err != nil {
+		log.Printf("Failed to send alert: %v", err)
 	}
 }
