@@ -2,18 +2,27 @@
 
 > *"They don't fire unless compromised. They watch, they listen, they report."*
 
-A Go daemon that configures and monitors multiple detection subsystems on a Linux
-host, reporting anomalies as structured SALUTE-style alerts over Telegram.
+Cyberspace is the newest domain of warfare, alongside land, sea, air and space, and
+the fog of war is just as thick there. Most people have no idea whether their machine
+is being probed or has already been compromised.
 
-Based on the doctrine of Forward Observers, a critical team in warfare responsible
-for tracking enemy activity and reporting back to HQ using SALUTE reports.
+The way to lift the fog of war is ISR: Intelligence, Surveillance and Reconnaissance.
+fogbot runs ISR on your workstation, and in some cases on the network around it,
+so you know when you are under attack instead of finding out after the damage is done.
+
+It is a Go daemon that configures and monitors multiple detection subsystems on a
+Linux host, reporting anomalies as structured SALUTE-style alerts over Telegram to
+notify you about Indicators of Compromise so that you may take action.
 
 As developers we are uniquely placed to be exploited by adversaries for the purposes
 of espionage or access to customers systems. One of the biggest hacks in history, 
-SolarWinds, started with the exploitation of a developers computer.
+SolarWinds, started with the exploitation of a developers computer and almost got to
+the US Military.
 
 This is a tool for protecting the Linux machines of developers using intrusion detection
-methods, with instant notifications going to Telegram by way of a Telegram bot.
+methods, with instant notifications going to Telegram by way of a Telegram bot. As intrusion
+prevention is a very opinionated space with many different consideratons that is left
+to you - knowing is just half the battle.
 
 ## Quick Start
 
