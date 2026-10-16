@@ -450,8 +450,14 @@ func handleStart(ctx context.Context, cmd notifier.Command, authState *auth.Stat
 		return
 	}
 
-	// Generate new auth code
-	code := authState.GenerateNewCode()
+	// Only one chat can be paired. Ignore strangers rather than confirm the bot
+	// guards a host; the operator re-pairs with /reset from the paired chat.
+	if authState.IsAnyoneAuthorized() {
+		log.Printf("Ignoring /start from chat %s: another chat is already authorized", cmd.ChatID)
+		return
+	}
+
+	code := authState.CodeForStart()
 	log.Printf("Authorization code generated for chat %s: %s", cmd.ChatID, code)
 	log.Printf("*** AUTH CODE: %s ***", code)
 

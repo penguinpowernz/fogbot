@@ -33,7 +33,7 @@ config:
 
 **Important:**
 - Don't include `commands:` field
-- Set `requires_approval: true` if skill needs to run system commands
+- Set `requires_approval: true` if skill needs to run system commands (informational: the enabler always prompts before running any command `DeduceCommands()` returns)
 - Only include declarative configuration in `config:` section
 
 ## Step 2: Implement Skill Package
@@ -174,7 +174,7 @@ docker-compose exec -T fogbot fogbot skill list
 
 # Enable it
 docker-compose exec -T fogbot fogbot skill enable 520
-# No approval needed since requires_approval: false
+# No approval prompt since DeduceCommands() returns no commands
 
 # Check it's enabled
 docker-compose exec -T fogbot fogbot skill list
@@ -225,7 +225,7 @@ func (s *SkillName) CheckSystemState() (bool, error) {
 ## Design Principles
 
 1. **Declarative over imperative** - Skills declare what to watch, not how
-2. **User approval for system changes** - Set `requires_approval: true` and implement `DeduceCommands()`
+2. **User approval for system changes** - Implement `DeduceCommands()`; the enabler always asks before running its commands
 3. **Idempotent configuration** - `CheckSystemState()` should verify config exists
 4. **Non-obvious identifiers** - Use `fw-520` not `CRON-WATCH` in system configs
 5. **Clear explanations** - Write good `why:` field explaining security value

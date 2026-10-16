@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
@@ -104,4 +105,27 @@ type failingTransport struct{}
 
 func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("connection refused")
+}
+
+// Fields such as a process command line are attacker controlled; an oversized
+// or non-UTF-8 field must not make Telegram reject the whole alert
+func TestFormatAlert_CapsAndCleansHostileFields(t *testing.T) {
+	tg := NewTelegram("token", 1, newState(t))
+	msg := tg.formatAlert(notifier.Alert{
+		Severity:  notifier.SeverityContact,
+		Title:     "Suspicious Process Execution",
+		Activity:  "bad\xffutf8\nHost: fake",
+		Equipment: strings.Repeat("A", 10000),
+		Time:      time.Now(),
+	})
+
+	if !utf8.ValidString(msg) {
+		t.Error("message is not valid UTF-8")
+	}
+	if n := utf8.RuneCountInString(msg); n > 4096 {
+		t.Errorf("message is %d characters, over Telegram's 4096 limit", n)
+	}
+	if strings.Contains(msg, "\nHost: fake") {
+		t.Errorf("a field started a new line:\n%s", msg)
+	}
 }

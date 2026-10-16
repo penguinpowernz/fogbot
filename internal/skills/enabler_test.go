@@ -103,3 +103,38 @@ func TestExecuteCommand_DryRunDoesNotRun(t *testing.T) {
 		t.Fatal("dry-run executed the command")
 	}
 }
+
+// promptSkill adds what the approval prompt needs to fakeSkill
+type promptSkill struct{ fakeSkill }
+
+func (*promptSkill) Why() string            { return "" }
+func (*promptSkill) SetupHints() []string   { return nil }
+func (*promptSkill) SetEnabled(enabled bool) {}
+
+func withStdin(t *testing.T, input string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString(input)
+	w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = old; r.Close() })
+}
+
+// Enable has no way to skip the prompt: a skill YAML without
+// requires_approval must not get its commands run unasked
+func TestEnable_DeclinedApprovalRunsNothing(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "ran")
+	withStdin(t, "n\n")
+
+	err := NewEnabler(&fakeTracker{}).Enable(&promptSkill{fakeSkill{cmds: appendCmds(out, "x")}})
+	if err == nil {
+		t.Fatal("expected an error when approval is declined")
+	}
+	if readRan(t, out) != "" {
+		t.Fatal("a command ran without approval")
+	}
+}

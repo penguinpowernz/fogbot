@@ -50,8 +50,11 @@ func NewEnabler(tracker ApprovalTracker) *Enabler {
 	}
 }
 
-// Enable handles the full enablement workflow for a skill
-func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
+// Enable handles the full enablement workflow for a skill. Every system command
+// needs the user's approval: a skill YAML that set requires_approval to false
+// (or left it out) would otherwise run commands unprompted, and unrecorded
+// commands could never be restored by startup repair.
+func (e *Enabler) Enable(skill Skill) error {
 	// Step 1: Check if system is already configured
 	isConfigured, err := skill.CheckSystemState()
 	if err != nil {
@@ -83,13 +86,13 @@ func (e *Enabler) Enable(skill Skill, requiresApproval bool) error {
 	// Step 3: Filter out already-approved commands from the approval prompt
 	needsApproval := []SystemCommand{}
 	for _, cmd := range commands {
-		if requiresApproval && !e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
+		if !e.approvalTracker.IsApproved(skill.ID(), cmd.Command) {
 			needsApproval = append(needsApproval, cmd)
 		}
 	}
 
 	// Step 4: Request approval if needed
-	if requiresApproval && len(needsApproval) > 0 {
+	if len(needsApproval) > 0 {
 		if err := e.requestApproval(skill, needsApproval); err != nil {
 			return fmt.Errorf("approval denied or failed: %w", err)
 		}

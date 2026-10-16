@@ -107,6 +107,9 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 		{
 			member: "Reloading",
 			opts: []dbus.MatchOption{
+				// Any client on the system bus can emit a signal with this
+				// interface; only accept the ones systemd itself sends
+				dbus.WithMatchSender("org.freedesktop.systemd1"),
 				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
 				dbus.WithMatchMember("Reloading"),
 			},
@@ -114,6 +117,9 @@ func (s *SystemdWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error)
 		{
 			member: "UnitFilesChanged",
 			opts: []dbus.MatchOption{
+				// Any client on the system bus can emit a signal with this
+				// interface; only accept the ones systemd itself sends
+				dbus.WithMatchSender("org.freedesktop.systemd1"),
 				dbus.WithMatchInterface("org.freedesktop.systemd1.Manager"),
 				dbus.WithMatchMember("UnitFilesChanged"),
 			},

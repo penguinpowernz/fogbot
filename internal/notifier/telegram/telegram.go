@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/penguinpowernz/fogbot/internal/auth"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
@@ -90,6 +91,15 @@ func (t *Telegram) Send(ctx context.Context, alert notifier.Alert) error {
 	}
 
 	_, err = t.apiCall("sendMessage", params)
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.status == http.StatusBadRequest {
+		// Telegram rejected the message, most likely its Markdown. Alert fields
+		// come from the watched system, so an attacker who could break the
+		// formatting would otherwise suppress the alert; resend it as plain text.
+		log.Printf("Telegram rejected alert (%v), resending without Markdown", err)
+		params.Del("parse_mode")
+		_, err = t.apiCall("sendMessage", params)
+	}
 	return err
 }
 
@@ -267,7 +277,30 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 // from the system, and an unbalanced _ or * makes Telegram reject the message.
 var markdownEscaper = strings.NewReplacer(`_`, `\_`, `*`, `\*`, "`", "\\`", `[`, `\[`)
 
+// maxFieldRunes caps each alert field. Telegram rejects messages over 4096
+// characters, and fields such as a process command line are chosen by whoever
+// is being detected, so an uncapped field could make every alert about them fail.
+const maxFieldRunes = 400
+
+// controlReplacer turns line breaks and tabs into spaces, so a field can't
+// start a new line that looks like another SALUTE field
+var controlReplacer = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+
+// escapeMarkdown makes a system-supplied field safe to send: valid UTF-8
+// (Telegram rejects anything else), no control characters, capped in length,
+// and with Markdown entity characters escaped.
 func escapeMarkdown(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = controlReplacer.Replace(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > maxFieldRunes {
+		s = string(r[:maxFieldRunes]) + "…"
+	}
 	return markdownEscaper.Replace(s)
 }
 
@@ -360,10 +393,20 @@ func (t *Telegram) apiCall(method string, params url.Values) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("api returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &apiError{status: resp.StatusCode, body: string(body)}
 	}
 
 	return body, nil
+}
+
+// apiError is a non-200 response from the Bot API
+type apiError struct {
+	status int
+	body   string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("api returned status %d: %s", e.status, e.body)
 }
 
 // Close shuts down the Telegram notifier

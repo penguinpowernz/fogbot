@@ -222,7 +222,7 @@ func runSkillEnable(cmd *cobra.Command, args []string) {
 	// Use the Enabler to handle the full workflow. For an enabled skill this
 	// reconciles the system with its current config, e.g. after the port list
 	// changed, which is how the daemon's repair-failed alert says to fix it.
-	if err := skillEnabler.Enable(skill, skillConfig.RequiresApproval); err != nil {
+	if err := skillEnabler.Enable(skill); err != nil {
 		fmt.Fprintf(os.Stderr, "Error enabling skill: %v\n", err)
 		os.Exit(1)
 	}
@@ -513,7 +513,7 @@ func runSkillInteractive(cmd *cobra.Command, args []string) {
 		}
 
 		// Use the Enabler for skills with implementations
-		if err := skillEnabler.Enable(skill, skillCfg.RequiresApproval); err != nil {
+		if err := skillEnabler.Enable(skill); err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ Failed to enable %s: %v\n", skillCfg.Name, err)
 			continue
 		}

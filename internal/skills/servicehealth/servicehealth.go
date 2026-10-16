@@ -83,7 +83,7 @@ func (s *ServiceHealth) Configure(cfg map[string]interface{}) error {
 	}
 
 	if intervalStr, ok := cfg["poll_interval"].(string); ok {
-		if d, err := time.ParseDuration(intervalStr); err == nil {
+		if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 { // time.NewTicker panics on d <= 0
 			s.checkInterval = d
 		}
 	}

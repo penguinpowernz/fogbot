@@ -135,7 +135,7 @@ it re-checks the system and prompts for approval of just the new commands
 
 ## Startup Reapplication
 
-On fogbot daemon startup, for each enabled skill with `requires_approval: true`:
+On fogbot daemon startup, for each enabled skill:
 
 1. Call `CheckSystemState()` to verify config exists
 2. If missing:

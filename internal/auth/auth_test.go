@@ -62,3 +62,28 @@ func TestAuthorizedChatID_SurvivesReload(t *testing.T) {
 		t.Fatal("expected no authorized chat after Deauthorize")
 	}
 }
+
+// A stranger's /start must not replace the code the operator is pairing with
+func TestCodeForStart_ReusesUnusedCode(t *testing.T) {
+	s, err := NewState(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := s.CodeForStart()
+	if again := s.CodeForStart(); again != first {
+		t.Fatalf("code changed from %s to %s", first, again)
+	}
+
+	s.MarkPendingAuth("other")
+	if err := s.Authorize("operator"); err != nil {
+		t.Fatal(err)
+	}
+	if s.IsPendingAuth("other") {
+		t.Error("other chats should stop pending once a chat is authorized")
+	}
+
+	s.Deauthorize()
+	if next := s.CodeForStart(); next == first {
+		t.Error("a burned code was handed out again")
+	}
+}
