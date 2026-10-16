@@ -43,8 +43,10 @@ fogbot reads the hits from the kernel log (`/dev/kmsg`). Every hit is CONTACT:
 A retrying client sends several SYNs, so after alerting a tripwire stays quiet
 for `alert_cooldown` for the same remote address and port.
 
-If the rules go missing (a reboot, `iptables -F`), fogbot puts the approved
-ones back at startup and alerts. After changing the port lists, run
+If the rules go missing, fogbot puts the approved ones back: quietly at
+startup (after a reboot), alerting only if it can't, and with a System Config
+Restored alert if they vanish while it's running (someone ran `iptables -F`).
+After changing the port lists, run
 `sudo fogbot skill enable port-tripwires` again to approve the new rules:
 fogbot never runs one you haven't seen.
 
@@ -68,13 +70,28 @@ config:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `watch_inbound` | | TCP ports to alert on connections *to* this machine |
-| `watch_outbound` | | TCP ports to alert on connections *from* this machine |
+| `watch_inbound` | | TCP ports to alert on connections *to* this machine (at most 15) |
+| `watch_outbound` | | TCP ports to alert on connections *from* this machine (at most 15) |
 | `alert_cooldown` | `5m` | Quiet period per remote address and port after an alert |
 
 Only list ports nothing legitimate uses, or every legitimate connection alerts.
 
 ## Examples
+
+**An SSH tripwire on a box that doesn't run sshd.** This is how to watch SSH
+on a workstation you never log in to remotely: leave sshd off (or uninstalled)
+and put a tripwire on 22. Nothing legitimate will ever connect, so any SYN is
+someone on your LAN looking for a way in, and there's no SSH server for them to
+attack:
+
+```yaml
+config:
+  watch_inbound: [22]
+```
+
+If sshd does run because you need it, leave 22 out (every login would alert)
+and use [ssh-monitor](../sshmonitor/README.md) instead. Don't start sshd just
+to have something to watch.
 
 **An RDP tripwire on a box that doesn't run RDP.** Port 3389 is one of the
 most scanned ports there is, and worms and ransomware operators go looking for
@@ -93,6 +110,7 @@ good tripwires for lateral movement:
 ```yaml
 config:
   watch_inbound:
+    - 22     # SSH (only if sshd isn't running)
     - 23     # telnet
     - 135    # MS RPC
     - 139    # NetBIOS

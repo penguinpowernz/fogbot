@@ -32,13 +32,13 @@ The files in this directory itself are the framework shared by all skills: the
 | 420 | [auditd-health](auditdhealth/README.md) | DEADMAN: auditd stopping or not logging | ✅ |
 | 500 | [file-watch](filewatch/README.md) | Access to sensitive and canary files (auditd) | ✅ |
 | 510 | [port-tripwires](porttripwires/README.md) | Connections to tripwire ports (iptables) | ✅ |
-| 520 | [cron-watch](cronwatch/README.md) | New cron jobs, timers, login scripts | planned |
+| 520 | [cron-watch](cronwatch/README.md) | New cron and at jobs | planned |
 | 530 | [fs-anomaly](fsanomaly/README.md) | ld.so.preload, hidden files, immutable flags | planned |
 | 540 | [dir-watch](dirwatch/README.md) | New files in watched directories (auditd) | ✅ |
 | 550 | [systemd-watch](systemdwatch/README.md) | systemd reloads and unit file changes | ✅ |
 | 600 | [rkhunter](rkhunter/README.md) | rkhunter findings | planned |
 | 610 | [chkrootkit](chkrootkit/README.md) | chkrootkit findings | planned |
-| 700 | [kernel-mod](kernelmod/README.md) | Kernel module loads, security sysctl changes | planned |
+| 700 | [kernel-mod](kernelmod/README.md) | Kernel module loads, security sysctl changes, LD_PRELOAD | planned |
 | 710 | [net-watch](netwatch/README.md) | Shells on the network, new listeners | planned |
 | 715 | [net-discover](netdiscover/README.md) | New hosts on the LAN | planned |
 | 800 | [bpftrace-exec](bpftraceexec/README.md) | Servers spawning shells, inline code, ptrace | planned |
@@ -50,7 +50,8 @@ Several skills work best pointed at things you *don't* use, because then any
 activity at all is the signal:
 
 - [port-tripwires](porttripwires/README.md): watch port 3389 even if you don't
-  run RDP. Nothing should ever connect to it.
+  run RDP. Nothing should ever connect to it. Likewise port 22 on a machine
+  without sshd: don't run sshd just to have something to watch.
 - [file-watch](filewatch/README.md): plant `~/.aws/credentials` even if you
   don't use AWS. Nothing legitimate will ever read it.
 - [file-watch](filewatch/README.md): a decoy `~/.ssh/id_rsa` when your real key

@@ -17,12 +17,17 @@ dpkg's action lines:
 
 | dpkg line | Alert | Severity |
 |---|---|---|
-| `install <pkg> <none> <ver>` (fresh install) | Package Installed | MOVEMENT |
-| `remove <pkg> <ver>` | Package Removed | MOVEMENT |
-| `upgrade <pkg> <old> <new>` | Package Upgraded | MOVEMENT |
+| `install <pkg>:<arch> <none> <ver>` (fresh install) | Package Installed | MOVEMENT |
+| `remove <pkg>:<arch> <ver>` | Package Removed | MOVEMENT |
+| `upgrade <pkg>:<arch> <old> <new>` | Package Upgraded | MOVEMENT |
 
-MOVEMENT alerts are batched into digests, so a large `apt upgrade` arrives as
-one message rather than hundreds.
+Each kind of alert is rate limited: after the first `dedup.max_burst` (default
+10, set in `/etc/fogbot/config.yaml`) in a dedup window, the rest are held and
+sent as one digest when the window ends, so a large `apt upgrade` arrives as
+a handful of messages rather than hundreds.
+
+It only sees dpkg. Software from snap, flatpak, pip or a binary copied into
+place never shows up here.
 
 ## Requirements
 

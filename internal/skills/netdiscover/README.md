@@ -9,17 +9,22 @@ and alerts when a new one appears.
 ## What it's for
 
 A device joining your network that you didn't add could be a rogue access
-point, a drop box someone plugged in, a neighbour on your Wi-Fi, or a compromised
-machine elsewhere that has started pivoting. Knowing what's normally on the
-network makes the new arrival stand out.
+point, a drop box someone plugged in, or a neighbour on your Wi-Fi. Knowing
+what's normally on the network makes the new arrival stand out.
 
 ## How it will work
 
 Every `scan_interval` it pings every address in `networks` (skipping this
 host's own and `exclude_ips`). The first sweep becomes a pending baseline for
 you to approve; after that, any host not in the baseline raises an alert with
-its MAC vendor and reverse DNS name where available, and an Intel button in
-Telegram to scan it further.
+its MAC vendor and reverse DNS name where available.
+
+The alert also carries an Intel button that runs nmap and arp-scan against the
+new host. That only happens when you tap it.
+
+Unlike fogbot's other skills, this one sends traffic: a ping to every address
+in `networks` each sweep. Anything watching the LAN will see your workstation
+doing a ping sweep every `scan_interval`.
 
 ## Requirements
 
@@ -58,9 +63,15 @@ config:
 
 ## Examples
 
+**Sweep only your own LAN.** List just the segment this workstation sits on,
+and only if you run it, such as home or a lab. Don't add wider ranges or other
+people's networks. A laptop that roams will sweep whatever network it is on
+when that network uses the same range, such as office or hotel Wi-Fi on
+192.168.1.0/24. Leave this skill off on laptops like that.
+
 **Guest networks and DHCP churn.** Phones and laptops coming and going will
-alert on a busy network. Point `networks` at the segment whose membership
-should be stable (servers, a home lab VLAN), not the guest Wi-Fi.
+alert on a busy network. Point `networks` at a segment whose membership
+should be stable, not the guest Wi-Fi.
 
 ## Enabling
 

@@ -7,13 +7,13 @@ written, or disappears.
 
 This watches for the absence of something rather than its presence. A log
 going quiet means the service writing it died, logging was misconfigured, or
-an attacker turned it off to cover their tracks. Deleting or truncating logs is
-standard clean-up after a break-in, and it leaves no event to alert on except
-the silence that follows.
+an attacker turned it off to cover their tracks. Stopping the logger leaves no
+event to alert on except the silence that follows; deleting the log shows up
+as missing.
 
 ## How it works
 
-Every minute it checks each configured file's modification time:
+Every `poll_interval` it checks each configured file's modification time:
 
 | Condition | Alert | Severity |
 |---|---|---|
@@ -44,28 +44,31 @@ config:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `watch_logs` | syslog 10m, auth.log 30m | List of `path` + `threshold` (Go duration) |
+| `watch_logs` | auth.log 10m, syslog 5m (as above) | List of `path` + `threshold` (Go duration). If the key is absent: syslog 10m, auth.log 30m |
 | `poll_interval` | `1m` | Time between checks |
 
 ## Examples
 
 **Pick logs that are never quiet.** The threshold has to be longer than the
 log's longest normal silence or you will get alerts every night. `auth.log` on
-a workstation can be silent for hours overnight; the journal and `audit.log`
-are written constantly:
+a workstation can be silent for an hour or more, so the shipped 10m will fire
+on an idle machine. Raise it or drop `auth.log`:
 
 ```yaml
 config:
   watch_logs:
     - path: /var/log/syslog
       threshold: 15m
-    - path: /var/log/audit/audit.log
-      threshold: 5m
+    - path: /var/log/auth.log
+      threshold: 2h
 ```
+
+`audit.log` is covered by [auditd-health](../auditdhealth/README.md), so
+don't list it here.
 
 **Systems with only the journal.** Recent Debian and Ubuntu installs may not
 run rsyslog, so `/var/log/syslog` and `/var/log/auth.log` never exist and both
-alert as missing. Remove them from `watch_logs`, or install rsyslog.
+alert as missing. Remove them from `watch_logs`.
 
 **Your own application.** Anything with a heartbeat log line works:
 

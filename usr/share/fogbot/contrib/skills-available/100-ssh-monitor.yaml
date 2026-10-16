@@ -4,14 +4,14 @@ description: >
   Monitors the systemd journal's auth messages (what auth.log receives)
   for SSH authentication events.
   Detects brute force attempts, successful logins from new IPs,
-  direct root logins, and sudo/su usage.
+  direct root logins, and failed sudo/su attempts.
 why: >
   SSH is the most common remote access vector on Linux systems.
-  Brute force attempts are routine background noise on any
-  internet-facing host, but a successful login from an IP that
-  has never connected before — especially at an unusual hour —
-  is a high-value indicator of compromise. Direct root login
-  bypasses the sudo audit trail entirely.
+  Repeated failed logins mean someone is guessing passwords, and
+  a successful login from an IP that has never connected before —
+  especially at an unusual hour — is a high-value indicator of
+  compromise. Direct root login bypasses the sudo audit trail
+  entirely.
 requires:
   - systemd journal read access
 tags: [auth, ssh, brute-force]

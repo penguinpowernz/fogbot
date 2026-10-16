@@ -23,17 +23,17 @@ auditctl -w /etc/shadow -p rwa -k fb-file-500
 
 Events tagged `fb-file-500` are read from the audit log and turned into a
 "Critical File Access" alert naming the file, the operation, the UID, PID and
-executable. Alerts are CONTACT, always so for anything under `/etc/shadow` or
-`/etc/sudoers`.
+executable. Severity follows `severity_default` (`red`, so CONTACT), except that
+anything under `/etc/shadow` or `/etc/sudoers` is always CONTACT.
 
 auditd rules don't survive a reboot, so fogbot re-applies the approved ones at
 startup. After changing `watch_paths`, run `sudo fogbot skill enable file-watch`
 again to approve the new rules.
 
 A path whose directory doesn't exist can't be watched and is skipped with a
-log line. A path that doesn't exist itself is fine: auditd watches it and
-alerts when it is created. `fogbot skill enable` prints the `touch` commands to
-create missing canaries.
+log line; create the directory and enable again. A path that doesn't exist
+itself is fine: auditd watches it and alerts when it is created. `fogbot skill
+enable` prints the `touch` commands to create missing canaries.
 
 ## Requirements
 
@@ -81,6 +81,11 @@ config:
 
 Watching a directory covers everything beneath it.
 
+The `r` on the auth files is loud: any program that maps a UID to a name
+(`ls -l`, `ps`) reads `/etc/passwd`, and every `sudo` reads `/etc/shadow` and
+`/etc/sudoers`. The default `/root/.bash_history` entry fires whenever root's
+shell exits. Expect those alerts, or drop them to `wa`.
+
 ## Examples
 
 **An AWS credentials canary, even if you don't use AWS.** Infostealers and
@@ -109,6 +114,23 @@ config:
 
 ```yaml
     /home/alice/.ssh/id_rsa: rwa
+```
+
+`ssh` itself tries `id_rsa` on every connection unless an `IdentityFile` is
+set, so add `IdentityFile ~/.ssh/id_ed25519` under `Host *` in
+`~/.ssh/config` first.
+
+**Login and boot scripts.** Persistence often goes into `~/.bashrc`,
+`~/.profile`, `/etc/profile.d` or `/etc/rc.local` (systemd still runs
+`rc.local` if it appears and is executable, though most systems have none).
+Watch them with `wa`, not `r`: your shell reads them every
+time it starts.
+
+```yaml
+    /home/alice/.bashrc: wa
+    /home/alice/.profile: wa
+    /etc/profile.d: wa
+    /etc/rc.local: wa
 ```
 
 **Other credential stores nobody on your box uses:** `~/.kube/config`,

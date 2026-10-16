@@ -15,15 +15,25 @@ exfiltration.
 - **Hidden files** (`.name`) in `/tmp`, `/dev/shm` and `/run` are how droppers
   try to avoid a casual `ls`.
 - **The immutable flag** (`chattr +i`) stops even root deleting a file, so
-  malware sets it on its own binaries and on `authorized_keys`.
+  malware sets it on its own files to survive cleanup.
 - **Large files in `/tmp`** are often an archive of your data waiting to be
   sent out.
 
+Programs run from these directories are [proc-exec](../procexec/README.md)'s
+job; the `LD_PRELOAD` environment variable is
+[kernel-mod](../kernelmod/README.md)'s.
+
 ## How it will work
 
-inotify on `watch_paths`; alerts on hidden file creation, any write to
-`/etc/ld.so.preload`, files gaining the immutable attribute, and files larger
-than `large_file_threshold_mb`.
+inotify on `watch_paths`; alerts on hidden file creation, the creation of or
+any write to `/etc/ld.so.preload` (watched via `/etc`, since inotify can't
+watch a file that doesn't exist yet), files gaining the immutable attribute,
+and files larger than `large_file_threshold_mb`. Only files under
+`watch_paths` are checked.
+
+Desktop software also makes hidden files in `/tmp` (Chromium's
+`.org.chromium.Chromium.*`, for one), so the design needs an ignore list
+before `alert_hidden_files` is quiet enough for a workstation.
 
 ## Requirements
 
@@ -57,8 +67,10 @@ config:
 ## Examples
 
 **`ld.so.preload` as a tripwire.** If the file doesn't exist on your system
-(check with `ls /etc/ld.so.preload`), its creation is a rootkit installing
-itself and nothing else. Keep it in `watch_paths` regardless.
+(check with `ls /etc/ld.so.preload`), its creation is almost certainly a
+rootkit installing itself; the rare legitimate users, such as the Snoopy
+command logger, are things you'd know you installed. Keep it in `watch_paths`
+regardless.
 
 ## Enabling
 

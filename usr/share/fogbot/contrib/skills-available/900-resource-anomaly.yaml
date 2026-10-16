@@ -17,4 +17,3 @@ config:
   cpu_sustained_seconds: 30
   memory_threshold_mb: 1024
   io_threshold_mb_per_sec: 50
-  check_process_hiding: true

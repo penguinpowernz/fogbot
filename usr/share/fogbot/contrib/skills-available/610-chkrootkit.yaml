@@ -11,6 +11,6 @@ requires:
 tags: [rootkit, scanner]
 severity_default: red
 config:
-  log_path: /var/log/chkrootkit.log
+  log_path: /var/log/chkrootkit/log.today
   alert_on_infected: true
   alert_on_suspicious: true

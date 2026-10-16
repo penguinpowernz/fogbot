@@ -1,7 +1,7 @@
 # net-watch (710)
 
 > **Planned.** This skill has no code yet, so `fogbot skill enable` refuses it.
-> This page describes the design. For outbound connections on specific ports,
+> This page describes the design. For connections in or out on specific ports,
 > [port-tripwires](../porttripwires/README.md) works today.
 
 Looks at open network connections, ties each to its process, and alerts on
@@ -60,8 +60,8 @@ config:
 
 **Developer workstations.** If you run Python or Node scripts that talk to the
 network, drop those interpreters from `suspicious_processes` and keep the
-shells (`bash`, `sh`, `dash`, `zsh`): a shell with a socket is never your
-normal workflow.
+shells, adding `dash` and `zsh` to the default `bash` and `sh`: a shell with a
+socket is never your normal workflow.
 
 ## Enabling
 
