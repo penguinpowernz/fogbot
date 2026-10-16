@@ -292,6 +292,33 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 		return
 	}
 
+	d.mu.RLock()
+	watchPaths, recursive := d.watchPaths, d.recursive
+	d.mu.RUnlock()
+
+	// The name was relative to an open directory fogbot couldn't look up:
+	// match it against the watched directories by inode instead
+	unresolved := false
+	if event.PathUnresolved {
+		if p, ok := auditlog.ResolvePath(event, watchPaths); ok {
+			path = p
+		} else {
+			unresolved = true
+		}
+	}
+
+	// A rename's chosen record is its destination, which for an entry moved
+	// out of a watched directory is somewhere else entirely
+	movedOut := !unresolved && event.NameType == "CREATE" && !underAnyDir(path, watchPaths)
+
+	// An auditd directory watch always covers the whole tree below it, so
+	// recursive: false is applied here. A path that couldn't be resolved
+	// may be in a watched directory itself, so it is still reported.
+	if !recursive && !unresolved && !movedOut && !inWatchedDir(path, watchPaths) {
+		log.Printf("[dir-watch] Ignoring %s: in a subdirectory and recursive is off", path)
+		return
+	}
+
 	name := filepath.Base(path)
 
 	// Check whitelist
@@ -333,8 +360,21 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 		}
 	}
 
+	// The PATH record says whether the entry was created (or moved in),
+	// removed, or already there and written to or chmodded. Every write used
+	// to be reported as a new file.
+	title, verb := "Entry Changed in Watched Directory", "Changed"
+	switch {
+	case movedOut:
+		title, verb = "Entry Moved Out of Watched Directory", "Moved out"
+	case event.NameType == "CREATE":
+		title, verb = "New Entry in Watched Directory", "New"
+	case event.NameType == "DELETE":
+		title, verb = "Entry Removed from Watched Directory", "Removed"
+	}
+
 	// Build activity description with process context
-	activity := fmt.Sprintf("New %s: %s", kind, name)
+	activity := fmt.Sprintf("%s %s: %s", verb, kind, name)
 	if event.Comm != "" {
 		activity = fmt.Sprintf("%s (by: %s)", activity, event.Comm)
 	}
@@ -342,9 +382,10 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 		activity = fmt.Sprintf("%s [uid=%s]", activity, event.UID)
 	}
 
-	// Determine severity
+	// A file that appears or changes is how a payload is delivered; a
+	// directory, or something removed, is worth knowing about but less so
 	severity := notifier.SeverityContact
-	if kind == "directory" {
+	if kind == "directory" || event.NameType == "DELETE" || movedOut {
 		severity = notifier.SeverityMovement
 	}
 
@@ -356,12 +397,15 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 
 	// Build location from path
 	location := filepath.Dir(path)
+	if unresolved {
+		location = "unknown directory (opened by file descriptor; check the audit log)"
+	}
 
 	alert := notifier.Alert{
 		Severity:  severity,
 		SkillID:   SkillID,
 		SkillName: SkillName,
-		Title:     "New Entry in Watched Directory",
+		Title:     title,
 		Size:      "1 " + kind,
 		Activity:  activity,
 		Location:  location,
@@ -377,10 +421,38 @@ func (d *DirWatch) handleAuditEvent(event auditlog.Event, alerts chan<- notifier
 			"ppid":    event.PPID,
 			"comm":    event.Comm,
 			"exe":     event.Exe,
-			"syscall": event.Syscall,
+			"syscall":  event.Syscall,
+			"nametype": event.NameType,
+			"resolved": strconv.FormatBool(!unresolved),
 		},
 	}
 
 	log.Printf("[dir-watch] Sending alert: %s - %s", alert.Title, alert.Activity)
 	alerts <- alert
+}
+
+// inWatchedDir reports whether path is one of the watched directories or an
+// entry directly inside one
+func inWatchedDir(path string, watchPaths []string) bool {
+	path = filepath.Clean(path)
+	for _, dir := range watchPaths {
+		dir = filepath.Clean(dir)
+		if path == dir || filepath.Dir(path) == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// underAnyDir reports whether path is one of the watched directories or
+// anywhere below one
+func underAnyDir(path string, watchPaths []string) bool {
+	path = filepath.Clean(path)
+	for _, dir := range watchPaths {
+		rel, err := filepath.Rel(filepath.Clean(dir), path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return true
+		}
+	}
+	return false
 }

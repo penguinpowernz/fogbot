@@ -29,15 +29,29 @@ auditctl -w /usr/local/bin/ -p wa -k fb-dir-540
 ```
 
 `-p wa` catches writes and attribute changes: creating, writing, renaming,
-deleting or chmod-ing anything in the tree. All of them raise the same alert,
-worded as a new entry. fogbot re-applies the approved rules at startup. After
-changing `watch_paths`, run `sudo fogbot skill enable dir-watch` again to
-approve the new rules.
+deleting or chmod-ing anything in the tree. The alert says which it was.
+fogbot re-applies the approved rules at startup. After changing `watch_paths`,
+run `sudo fogbot skill enable dir-watch` again to approve the new rules.
+`sudo fogbot skill disable dir-watch` removes them again.
 
-| Entry | Alert | Severity |
+| What happened | Alert | Severity |
 |---|---|---|
-| File | New Entry in Watched Directory | CONTACT |
-| Directory | New Entry in Watched Directory | MOVEMENT |
+| File created, or moved in | New Entry in Watched Directory | CONTACT |
+| Existing file written to or chmodded | Entry Changed in Watched Directory | CONTACT |
+| File deleted | Entry Removed from Watched Directory | MOVEMENT |
+| File moved out to somewhere else | Entry Moved Out of Watched Directory | MOVEMENT |
+| Any of these for a directory | (as above) | MOVEMENT |
+| Events arrived faster than fogbot could check them | Audit Events Dropped | CONTACT |
+
+An auditd directory watch always covers the whole tree below it. With
+`recursive: false` (the default) fogbot only reports entries directly inside a
+watched directory and ignores the rest.
+
+A program can name a file relative to a directory it has open
+(`openat(fd, "x")`) rather than to its working directory. fogbot looks that
+directory up while the process is still running, or else matches the file's
+inode against the watched directories. If neither works, the alert says the
+directory is unknown instead of guessing.
 
 ## Requirements
 
@@ -66,7 +80,7 @@ config:
 | `watch_paths` | `/usr/local/bin/ /etc/cron.d/ /root/` | Absolute directories to watch |
 | `glob_filter` | `""` (everything) | Only alert for file names matching this glob, e.g. `*.sh`. Applies to every watched path |
 | `whitelist` | `[]` | File names (not paths) to ignore |
-| `recursive` | `false` | Not used: an auditd directory watch always covers the whole tree |
+| `recursive` | `false` | Also report entries in subdirectories of the watched paths |
 
 ## Examples
 
@@ -85,7 +99,8 @@ config:
 system units.
 
 **Root's home is busy.** `/root/` is watched by default, and root's shell
-writes `.bash_history`, `.viminfo` and `.lesshst` all the time. Whitelist them
+writes `.bash_history`, `.viminfo` and `.lesshst` all the time (subdirectories
+such as `.cache/` are already skipped while `recursive` is off). Whitelist them
 so the alerts that remain mean something:
 
 ```yaml
