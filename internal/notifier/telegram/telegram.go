@@ -172,7 +172,7 @@ func (t *Telegram) alertChatID() (int64, error) {
 	return 0, fmt.Errorf("no authorized chat: send /start to the bot to authorize one")
 }
 
-// SendText sends a plain text message to a specific chat (for command responses)
+// SendText sends a Markdown message to a specific chat (for command responses)
 func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 	// Parse chatID string to int64
 	var targetChatID int64
@@ -186,11 +186,20 @@ func (t *Telegram) SendText(ctx context.Context, chatID, text string) error {
 		return err
 	}
 
+	// The replies use Markdown (*bold*, `code`); without parse_mode Telegram
+	// showed the markers literally
 	params := url.Values{}
 	params.Set("chat_id", strconv.FormatInt(targetChatID, 10))
 	params.Set("text", text)
+	params.Set("parse_mode", "Markdown")
 
 	_, err = t.apiCall("sendMessage", params)
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.status == http.StatusBadRequest {
+		// Some replies carry the hostname, which may hold an unbalanced _
+		params.Del("parse_mode")
+		_, err = t.apiCall("sendMessage", params)
+	}
 	if err != nil {
 		return fmt.Errorf("sendMessage to %d failed: %w", targetChatID, err)
 	}
@@ -269,7 +278,7 @@ func (t *Telegram) getUpdates(ctx context.Context) ([]Update, error) {
 // processUpdate converts a Telegram update to a Command
 func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	var text string
-	var chatID int64
+	var chatID, messageID int64
 	var callbackID string
 
 	// Chat and the callback's Message are optional in the Bot API (e.g. a
@@ -280,6 +289,7 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	} else if cq := update.CallbackQuery; cq != nil && cq.Message != nil && cq.Message.Chat != nil {
 		text = cq.Data
 		chatID = cq.Message.Chat.ID
+		messageID = cq.Message.MessageID
 		callbackID = cq.ID
 	} else {
 		return nil
@@ -304,6 +314,10 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 	// Sanitize input
 	text = auth.Sanitize(text)
 
+	if callbackID != "" {
+		return t.processCallback(isAuth, chatIDStr, messageID, callbackID, text)
+	}
+
 	// Parse command
 	args := strings.Fields(text)
 	if len(args) == 0 {
@@ -318,6 +332,43 @@ func (t *Telegram) processUpdate(update Update) *notifier.Command {
 		Raw:        text,
 		ChatID:     chatIDStr,
 		Args:       args,
+		Verb:       verb,
+		CallbackID: callbackID,
+	}
+}
+
+// processCallback handles a press of an alert's inline button. Only the
+// authorized chat's presses count, and only with a token this bot signed.
+// Telegram shows a loading spinner on the button until the callback is
+// answered, so a press that counts is answered and the button removed.
+func (t *Telegram) processCallback(isAuth bool, chatID string, messageID int64, callbackID, data string) *notifier.Command {
+	if !isAuth {
+		return nil
+	}
+	verb, noun, ok := auth.VerifyCallback(data, t.token)
+	if !ok || verb != notifier.CmdAck {
+		return nil
+	}
+
+	params := url.Values{}
+	params.Set("callback_query_id", callbackID)
+	params.Set("text", "Acknowledged")
+	if _, err := t.apiCall("answerCallbackQuery", params); err != nil {
+		log.Printf("Failed to answer callback: %v", err)
+	}
+
+	params = url.Values{}
+	params.Set("chat_id", chatID)
+	params.Set("message_id", strconv.FormatInt(messageID, 10))
+	params.Set("reply_markup", `{"inline_keyboard":[]}`)
+	if _, err := t.apiCall("editMessageReplyMarkup", params); err != nil {
+		log.Printf("Failed to remove acknowledge button: %v", err)
+	}
+
+	return &notifier.Command{
+		Raw:        data,
+		ChatID:     chatID,
+		Args:       []string{verb, noun},
 		Verb:       verb,
 		CallbackID: callbackID,
 	}
@@ -405,8 +456,7 @@ func (t *Telegram) formatAlert(alert notifier.Alert) string {
 
 // makeAckButton creates an inline keyboard with acknowledge button
 func (t *Telegram) makeAckButton(skillID int) string {
-	// Simplified - in production would use proper callback signing
-	callback := auth.SignCallback("ack", strconv.Itoa(skillID), t.token)
+	callback := auth.SignCallback(notifier.CmdAck, strconv.Itoa(skillID), t.token)
 	keyboard := map[string]interface{}{
 		"inline_keyboard": [][]map[string]string{
 			{

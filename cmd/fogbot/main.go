@@ -434,6 +434,12 @@ func handleCommands(ctx context.Context, cmdChan <-chan notifier.Command, authSt
 					handleStatus(ctx, cmd, machineHostname, notif, skillMgr.runningNames())
 				}
 
+			case notifier.CmdAck:
+				// Only the authorized chat's presses of a signed button get here
+				if authState.IsAuthorized(cmd.ChatID) && len(cmd.Args) > 1 {
+					log.Printf("Alert from skill #%s acknowledged by chat %s", cmd.Args[1], cmd.ChatID)
+				}
+
 			case notifier.CmdApprove:
 				if authState.IsAuthorized(cmd.ChatID) {
 					handleApprove(ctx, cmd, notif)
@@ -633,7 +639,7 @@ func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Not
 // a notifier alerts are only logged, but the bus is still drained so watchers
 // never block.
 func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
-	// Suppressed CONTACT alerts are only reported through these digests
+	// Suppressed alerts are only reported through these digests
 	digestTicker := time.NewTicker(digestInterval)
 	defer digestTicker.Stop()
 

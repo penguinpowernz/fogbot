@@ -3,6 +3,8 @@ package auditlog
 import (
 	"strings"
 	"testing"
+
+	"github.com/hpcloud/tail"
 )
 
 func TestParseAuditLogLine(t *testing.T) {
@@ -113,5 +115,58 @@ type=SYSCALL msg=audit(1710547200.124:457): uid=1000 comm="touch" exe="/usr/bin/
 
 	if events[2].UID != "1000" {
 		t.Errorf("Expected third event uid=1000, got %s", events[2].UID)
+	}
+}
+
+// The bug: when the tail of audit.log stopped, the file and dir watchers kept
+// waiting on their channels and looked healthy while detecting nothing
+func TestTailerDeathClosesSubscribers(t *testing.T) {
+	tr, _ := NewTailer("/nonexistent/audit.log")
+	tr.tail = &tail.Tail{Lines: make(chan *tail.Line)}
+
+	events := make(chan Event, 1)
+	tr.Subscribe("fb-file-500", events)
+
+	tr.wg.Add(1)
+	go tr.processLines()
+	close(tr.tail.Lines)
+	tr.wg.Wait()
+
+	if _, ok := <-events; ok {
+		t.Fatal("subscriber channel still open after the tailer stopped")
+	}
+	if !tr.Dead() {
+		t.Fatal("tailer not marked dead")
+	}
+
+	// Subscribing to a dead tailer is told at once, rather than waiting forever
+	late := make(chan Event, 1)
+	tr.Subscribe("fb-dir-540", late)
+	if _, ok := <-late; ok {
+		t.Fatal("late subscriber's channel left open")
+	}
+	tr.Unsubscribe("fb-dir-540", late) // the watcher's deferred unsubscribe must not panic
+}
+
+// Stopping the tailer on purpose isn't a failure
+func TestTailerStopLeavesSubscribersOpen(t *testing.T) {
+	tr, _ := NewTailer("/nonexistent/audit.log")
+	tr.tail = &tail.Tail{Lines: make(chan *tail.Line)}
+
+	events := make(chan Event, 1)
+	tr.Subscribe("fb-file-500", events)
+
+	tr.wg.Add(1)
+	go tr.processLines()
+	tr.cancel()
+	tr.wg.Wait()
+
+	if tr.Dead() {
+		t.Fatal("tailer stopped on purpose was marked dead")
+	}
+	select {
+	case <-events:
+		t.Fatal("subscriber channel closed by a deliberate stop")
+	default:
 	}
 }
