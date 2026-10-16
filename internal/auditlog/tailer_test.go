@@ -170,3 +170,19 @@ func TestTailerStopLeavesSubscribersOpen(t *testing.T) {
 	default:
 	}
 }
+
+func TestDistributeCountsDroppedEvents(t *testing.T) {
+	tailer, _ := NewTailer("unused")
+	full := make(chan Event) // nobody reading: every send would block
+	tailer.Subscribe("fb-file-500", full)
+
+	tailer.distribute(&Event{RuleKey: "fb-file-500"})
+	tailer.distribute(&Event{RuleKey: "fb-file-500"})
+
+	if n := tailer.TakeDropped("fb-file-500"); n != 2 {
+		t.Fatalf("dropped = %d, want 2", n)
+	}
+	if n := tailer.TakeDropped("fb-file-500"); n != 0 {
+		t.Fatalf("count not reset, got %d", n)
+	}
+}

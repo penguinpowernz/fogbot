@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -648,13 +649,24 @@ func handleApprove(ctx context.Context, cmd notifier.Command, notif notifier.Not
 		"  sudo fogbot baseline approve")
 }
 
-// processAlerts passes alerts from the bus through dedup and sends them. Without
-// a notifier alerts are only logged, but the bus is still drained so watchers
-// never block.
+// processAlerts passes alerts from the bus through dedup and queues them for
+// sending. Without a notifier alerts are only logged, but the bus is still
+// drained so watchers never block.
+//
+// Sending happens on its own goroutine. When it happened here, one alert
+// waiting out Telegram's rate limit (up to three minutes of retries) stopped
+// the bus: watchers blocked, and the audit tailer threw away the events it
+// couldn't hand them. Anyone able to set off a burst of alerts could get the
+// events that followed dropped.
 func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *dedup.Engine, notif notifier.Notifier, hostname string) {
 	// Suppressed alerts are only reported through these digests
 	digestTicker := time.NewTicker(digestInterval)
 	defer digestTicker.Stop()
+
+	out := newAlertQueue(notif)
+	if notif != nil {
+		go out.run(ctx)
+	}
 
 	for {
 		select {
@@ -663,7 +675,7 @@ func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *
 
 		case now := <-digestTicker.C:
 			for _, digest := range dedupEngine.Digests(now) {
-				deliverAlert(ctx, digest, notif, hostname)
+				deliverAlert(digest, out, hostname)
 			}
 
 		case alert := <-bus:
@@ -676,7 +688,7 @@ func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *
 			if isDigest {
 				alert.Title = fmt.Sprintf("%s (digest: %d events)", alert.Title, digestCount)
 			}
-			deliverAlert(ctx, alert, notif, hostname)
+			deliverAlert(alert, out, hostname)
 		}
 	}
 }
@@ -685,17 +697,72 @@ func processAlerts(ctx context.Context, bus <-chan notifier.Alert, dedupEngine *
 // are due
 const digestInterval = 10 * time.Second
 
-// deliverAlert logs an alert and sends it, if there is a notifier
-func deliverAlert(ctx context.Context, alert notifier.Alert, notif notifier.Notifier, hostname string) {
+// deliverAlert logs an alert and queues it for sending
+func deliverAlert(alert notifier.Alert, out *alertQueue, hostname string) {
 	if alert.Host == "" {
 		alert.Host = hostname
 	}
 	log.Printf("[alert] %s: %s - %s", alert.Severity, alert.Title, alert.Activity)
+	out.add(alert)
+}
 
-	if notif == nil {
+// alertQueueSize bounds how many alerts can wait to be sent. Dedup keeps a
+// flood well below it; it only fills if Telegram is unreachable for long.
+const alertQueueSize = 500
+
+// alertQueue holds alerts waiting to be sent, so a slow send never holds up
+// the alert bus
+type alertQueue struct {
+	notif   notifier.Notifier
+	queue   chan notifier.Alert
+	dropped atomic.Int64 // alerts that didn't fit in the queue
+}
+
+func newAlertQueue(notif notifier.Notifier) *alertQueue {
+	return &alertQueue{notif: notif, queue: make(chan notifier.Alert, alertQueueSize)}
+}
+
+// add queues an alert without blocking. One that doesn't fit is counted, and
+// the count is reported once the queue drains.
+func (q *alertQueue) add(alert notifier.Alert) {
+	if q.notif == nil {
 		return
 	}
-	if err := notif.Send(ctx, alert); err != nil {
+	select {
+	case q.queue <- alert:
+	default:
+		q.dropped.Add(1)
+		log.Printf("[alert-dropped] %s: %s (send queue full)", alert.Severity, alert.Title)
+	}
+}
+
+// run sends queued alerts until ctx ends
+func (q *alertQueue) run(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case alert := <-q.queue:
+			q.send(ctx, alert)
+			if n := q.dropped.Swap(0); n > 0 {
+				q.send(ctx, notifier.Alert{
+					Severity:    notifier.SeverityContact,
+					Title:       "Alerts Dropped",
+					Size:        fmt.Sprintf("%d alerts", n),
+					Activity:    fmt.Sprintf("%d alerts could not be sent: too many were waiting while Telegram was slow or unreachable", n),
+					Unit:        "the dropped alerts are in the fogbot daemon log as [alert-dropped]",
+					Host:        alert.Host,
+					Time:        time.Now(),
+					Equipment:   "alert-queue",
+					Acknowledge: true,
+				})
+			}
+		}
+	}
+}
+
+func (q *alertQueue) send(ctx context.Context, alert notifier.Alert) {
+	if err := q.notif.Send(ctx, alert); err != nil {
 		log.Printf("Failed to send alert: %v", err)
 	}
 }

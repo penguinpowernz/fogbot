@@ -61,6 +61,11 @@ type Tailer struct {
 
 	// dead is set when the tailer stopped reading on its own. Guarded by mu.
 	dead bool
+
+	// dropped counts, by rule key, events thrown away because the
+	// subscriber's channel was full
+	dropMu  sync.Mutex
+	dropped map[string]uint64
 }
 
 // pendingEvent is a SYSCALL event waiting for the rest of its records
@@ -507,8 +512,25 @@ func (t *Tailer) distribute(event *Event) {
 		case ch <- *event:
 		default:
 			log.Printf("[audit-tailer] Subscriber channel full for key %s, dropping event", event.RuleKey)
+			t.dropMu.Lock()
+			if t.dropped == nil {
+				t.dropped = make(map[string]uint64)
+			}
+			t.dropped[event.RuleKey]++
+			t.dropMu.Unlock()
 		}
 	}
+}
+
+// TakeDropped returns how many events for key were thrown away because the
+// subscriber wasn't keeping up, and resets the count. Subscribers poll it and
+// alert, so lost events never go unreported.
+func (t *Tailer) TakeDropped(key string) uint64 {
+	t.dropMu.Lock()
+	defer t.dropMu.Unlock()
+	n := t.dropped[key]
+	delete(t.dropped, key)
+	return n
 }
 
 // ParseAuditLog is a simple helper for testing/debugging that reads a log file once

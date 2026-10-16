@@ -241,11 +241,18 @@ func (d *DirWatch) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 		seen := make(map[string]time.Time)
 		cleanupTicker := time.NewTicker(1 * time.Minute)
 		defer cleanupTicker.Stop()
+		droppedTicker := time.NewTicker(auditlog.DroppedCheckInterval)
+		defer droppedTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
+
+			case <-droppedTicker.C:
+				if n := tailer.TakeDropped(ruleKey); n > 0 {
+					alerts <- auditlog.DroppedAlert(n, SkillID, SkillName, ruleKey)
+				}
 
 			case <-cleanupTicker.C:
 				// Clean up old entries from seen map
