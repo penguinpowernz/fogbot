@@ -1,7 +1,6 @@
 package procexec
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -164,8 +163,7 @@ func TestCleanupSeenProcs_EmptyMap_NoError(t *testing.T) {
 //
 // We build a minimal fake /proc directory with a synthetic PID whose exe
 // symlink points into a suspicious path, then redirect the skill to read
-// from the fake /proc. Because scanProc is hard-coded to read "/proc", we
-// instead test the detection logic directly via a wrapper.
+// from the fake /proc.
 // ---------------------------------------------------------------------------
 
 // buildFakeProc creates a fake /proc/<pid>/exe symlink pointing to target.
@@ -187,68 +185,10 @@ func buildFakeProc(t *testing.T, pid int, exeTarget string) string {
 	return procRoot
 }
 
-// scanProcDir exercises the core detection logic of scanProc against an
-// arbitrary proc root directory. This avoids hard-coupling to /proc.
+// scanProcDir runs the real scan against a fake proc root
 func (p *ProcExec) scanProcDir(procRoot string, alertChan chan<- notifier.Alert) {
-	entries, err := os.ReadDir(procRoot)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		p.mu.RLock()
-		seen := p.seenProcs[pid]
-		p.mu.RUnlock()
-		if seen {
-			continue
-		}
-
-		exePath, err := os.Readlink(filepath.Join(procRoot, entry.Name(), "exe"))
-		if err != nil {
-			continue
-		}
-
-		for _, suspPath := range p.suspiciousPaths {
-			if len(exePath) >= len(suspPath) && exePath[:len(suspPath)] == suspPath {
-				p.mu.Lock()
-				p.seenProcs[pid] = true
-				p.mu.Unlock()
-
-				cmdlineBytes, _ := os.ReadFile(filepath.Join(procRoot, entry.Name(), "cmdline"))
-				commBytes, _ := os.ReadFile(filepath.Join(procRoot, entry.Name(), "comm"))
-				comm := string(commBytes)
-				if len(comm) > 0 && comm[len(comm)-1] == '\n' {
-					comm = comm[:len(comm)-1]
-				}
-
-				alertChan <- notifier.Alert{
-					Severity:    notifier.SeverityContact,
-					SkillID:     SkillID,
-					SkillName:   SkillName,
-					Title:       "Suspicious Process Execution",
-					Size:        "1 process",
-					Activity:    fmt.Sprintf("Executable running from %s", suspPath),
-					Location:    exePath,
-					Unit:        fmt.Sprintf("pid=%d (%s)", pid, comm),
-					Time:        time.Now(),
-					Equipment:   string(cmdlineBytes),
-					Acknowledge: true,
-					Metadata: map[string]string{
-						"pid": strconv.Itoa(pid),
-						"exe": exePath,
-					},
-				}
-				break
-			}
-		}
-	}
+	p.procDir = procRoot
+	p.scanProc(alertChan)
 }
 
 func TestScanProc_SuspiciousExe_ProducesAlert(t *testing.T) {

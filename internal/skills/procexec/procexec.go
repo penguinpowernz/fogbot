@@ -27,7 +27,13 @@ type ProcExec struct {
 	config          map[string]interface{}
 	suspiciousPaths []string
 	pollInterval    time.Duration
+	detectMemfd     bool
 	seenProcs       map[int]bool // track PIDs we've already alerted on
+
+	// procDir is where processes are looked up; execEvents subscribes to exec
+	// notifications. Both are fields so tests can replace them.
+	procDir    string
+	execEvents func(ctx context.Context) (<-chan int, error)
 }
 
 // New creates a new ProcExec skill
@@ -36,7 +42,10 @@ func New() *ProcExec {
 		enabled:         false,
 		suspiciousPaths: []string{"/tmp", "/dev/shm", "/run/user"},
 		pollInterval:    5 * time.Second,
+		detectMemfd:     true,
 		seenProcs:       make(map[int]bool),
+		procDir:         "/proc",
+		execEvents:      listenExecs,
 	}
 }
 
@@ -85,6 +94,11 @@ func (p *ProcExec) Configure(cfg map[string]interface{}) error {
 		}
 	}
 
+	p.detectMemfd = true
+	if v, ok := cfg["detect_memfd_exec"].(bool); ok {
+		p.detectMemfd = v
+	}
+
 	if intervalStr, ok := cfg["poll_interval"].(string); ok {
 		if d, err := time.ParseDuration(intervalStr); err == nil && d > 0 { // time.NewTicker panics on d <= 0
 			p.pollInterval = d
@@ -105,15 +119,38 @@ func (p *ProcExec) Watch(ctx context.Context) (<-chan notifier.Alert, error) {
 func (p *ProcExec) watchLoop(ctx context.Context, alertChan chan<- notifier.Alert) {
 	defer close(alertChan)
 
+	// Exec events catch processes that would come and go between polls. The
+	// polls still run: they see what was already running when fogbot started,
+	// and anything whose events were missed.
+	var execs <-chan int
+	if ch, err := p.execEvents(ctx); err != nil {
+		log.Printf("[proc-exec] Exec events unavailable, polling only: %v", err)
+	} else {
+		execs = ch
+	}
+
 	ticker := time.NewTicker(p.pollInterval)
 	defer ticker.Stop()
 
-	log.Printf("[proc-exec] Watching /proc for suspicious executables (interval: %v)", p.pollInterval)
+	log.Printf("[proc-exec] Watching %s for suspicious executables (interval: %v, exec events: %v)", p.procDir, p.pollInterval, execs != nil)
+	p.scanProc(alertChan)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
+		case pid, ok := <-execs:
+			if !ok {
+				log.Printf("[proc-exec] Exec events stopped, polling only")
+				execs = nil
+				continue
+			}
+			// A new program in this process: judge it afresh
+			p.mu.Lock()
+			delete(p.seenProcs, pid)
+			p.mu.Unlock()
+			p.checkPID(pid, alertChan)
 
 		case <-ticker.C:
 			p.scanProc(alertChan)
@@ -123,9 +160,9 @@ func (p *ProcExec) watchLoop(ctx context.Context, alertChan chan<- notifier.Aler
 }
 
 func (p *ProcExec) scanProc(alertChan chan<- notifier.Alert) {
-	entries, err := os.ReadDir("/proc")
+	entries, err := os.ReadDir(p.procDir)
 	if err != nil {
-		log.Printf("[proc-exec] Failed to read /proc: %v", err)
+		log.Printf("[proc-exec] Failed to read %s: %v", p.procDir, err)
 		return
 	}
 
@@ -139,60 +176,78 @@ func (p *ProcExec) scanProc(alertChan chan<- notifier.Alert) {
 		if err != nil {
 			continue
 		}
+		p.checkPID(pid, alertChan)
+	}
+}
 
-		// Skip if we've already alerted on this PID
-		p.mu.RLock()
-		seen := p.seenProcs[pid]
-		p.mu.RUnlock()
+// checkPID alerts if the process is running an executable from a suspicious
+// place, unless it was already reported
+func (p *ProcExec) checkPID(pid int, alertChan chan<- notifier.Alert) {
+	p.mu.RLock()
+	seen := p.seenProcs[pid]
+	suspiciousPaths, detectMemfd := p.suspiciousPaths, p.detectMemfd
+	p.mu.RUnlock()
+	if seen {
+		return
+	}
 
-		if seen {
-			continue
-		}
+	dir := filepath.Join(p.procDir, strconv.Itoa(pid))
 
-		// Read the exe symlink to get the executable path
-		exePath, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
-		if err != nil {
-			continue
-		}
+	// Read the exe symlink to get the executable path
+	exePath, err := os.Readlink(filepath.Join(dir, "exe"))
+	if err != nil {
+		return
+	}
 
-		// Check if exe is in a suspicious location
-		for _, suspPath := range p.suspiciousPaths {
+	var title, activity string
+	if detectMemfd && strings.HasPrefix(exePath, "/memfd:") {
+		// memfd_create gives an anonymous file that never touches the disk;
+		// executing one is how fileless malware runs a payload
+		title = "Fileless Process Execution"
+		activity = "Executable running from an in-memory file (memfd)"
+	} else {
+		for _, suspPath := range suspiciousPaths {
 			if underPath(exePath, suspPath) {
-				// Mark as seen
-				p.mu.Lock()
-				p.seenProcs[pid] = true
-				p.mu.Unlock()
-
-				// Read cmdline for additional context
-				cmdlineBytes, _ := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
-				cmdline := strings.ReplaceAll(string(cmdlineBytes), "\x00", " ")
-
-				// Read comm (process name)
-				commBytes, _ := os.ReadFile(filepath.Join("/proc", entry.Name(), "comm"))
-				comm := strings.TrimSpace(string(commBytes))
-
-				alertChan <- notifier.Alert{
-					Severity:    notifier.SeverityContact,
-					SkillID:     SkillID,
-					SkillName:   SkillName,
-					Title:       "Suspicious Process Execution",
-					Size:        "1 process",
-					Activity:    fmt.Sprintf("Executable running from %s", suspPath),
-					Location:    exePath,
-					Unit:        fmt.Sprintf("pid=%d (%s)", pid, comm),
-					Time:        time.Now(),
-					Equipment:   cmdline,
-					Acknowledge: true,
-					Metadata: map[string]string{
-						"pid":     strconv.Itoa(pid),
-						"exe":     exePath,
-						"cmdline": cmdline,
-					},
-				}
-
+				title = "Suspicious Process Execution"
+				activity = fmt.Sprintf("Executable running from %s", suspPath)
 				break
 			}
 		}
+	}
+	if title == "" {
+		return
+	}
+
+	// Mark as seen
+	p.mu.Lock()
+	p.seenProcs[pid] = true
+	p.mu.Unlock()
+
+	// Read cmdline for additional context
+	cmdlineBytes, _ := os.ReadFile(filepath.Join(dir, "cmdline"))
+	cmdline := strings.TrimSpace(strings.ReplaceAll(string(cmdlineBytes), "\x00", " "))
+
+	// Read comm (process name)
+	commBytes, _ := os.ReadFile(filepath.Join(dir, "comm"))
+	comm := strings.TrimSpace(string(commBytes))
+
+	alertChan <- notifier.Alert{
+		Severity:    notifier.SeverityContact,
+		SkillID:     SkillID,
+		SkillName:   SkillName,
+		Title:       title,
+		Size:        "1 process",
+		Activity:    activity,
+		Location:    exePath,
+		Unit:        fmt.Sprintf("pid=%d (%s)", pid, comm),
+		Time:        time.Now(),
+		Equipment:   cmdline,
+		Acknowledge: true,
+		Metadata: map[string]string{
+			"pid":     strconv.Itoa(pid),
+			"exe":     exePath,
+			"cmdline": cmdline,
+		},
 	}
 }
 
@@ -212,7 +267,7 @@ func (p *ProcExec) cleanupSeenProcs() {
 
 	// Remove PIDs that no longer exist
 	for pid := range p.seenProcs {
-		if _, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid))); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(p.procDir, strconv.Itoa(pid))); os.IsNotExist(err) {
 			delete(p.seenProcs, pid)
 		}
 	}
