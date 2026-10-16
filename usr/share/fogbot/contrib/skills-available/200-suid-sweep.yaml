@@ -24,3 +24,11 @@ config:
     - /usr/sbin
     - /usr/local/bin
     - /usr/local/sbin
+  # Places no SUID/SGID file belongs: anything found here always alerts, and
+  # approving the baseline doesn't clear it. An empty list switches this off.
+  no_suid_paths:
+    - /home
+    - /root
+    - /tmp
+    - /var/tmp
+    - /dev/shm

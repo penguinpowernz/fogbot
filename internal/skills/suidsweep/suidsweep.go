@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,6 +30,12 @@ type SuidSweep struct {
 	sweepInterval   time.Duration
 	baselineManager *baseline.Manager
 	searchPaths     []string
+	// noSuidPaths are swept for SUID/SGID files that have no business
+	// existing at all; they are kept out of the baseline so approving it
+	// never silences them
+	noSuidPaths []string
+	// flagged holds no-SUID-path findings already reported (path -> hash)
+	flagged map[string]string
 }
 
 // New creates a new SuidSweep skill
@@ -48,10 +56,10 @@ func (s *SuidSweep) Description() string {
 func (s *SuidSweep) Why() string {
 	return "SUID binaries run with elevated privileges. New ones are a common persistence mechanism."
 }
-func (s *SuidSweep) Requires() []string { return []string{"root"} }
-func (s *SuidSweep) Tags() []string     { return []string{"permissions", "suid", "persistence"} }
-func (s *SuidSweep) DropIns() []skills.DropIn    { return nil }
-func (s *SuidSweep) SetupHints() []string        { return nil }
+func (s *SuidSweep) Requires() []string       { return []string{"root"} }
+func (s *SuidSweep) Tags() []string           { return []string{"permissions", "suid", "persistence"} }
+func (s *SuidSweep) DropIns() []skills.DropIn { return nil }
+func (s *SuidSweep) SetupHints() []string     { return nil }
 func (s *SuidSweep) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -91,6 +99,16 @@ func (s *SuidSweep) Configure(cfg map[string]interface{}) error {
 		}
 		if len(searchPaths) > 0 {
 			s.searchPaths = searchPaths
+		}
+	}
+
+	// An empty list is honoured, to switch the check off
+	if paths, ok := cfg["no_suid_paths"].([]interface{}); ok {
+		s.noSuidPaths = make([]string, 0, len(paths))
+		for _, path := range paths {
+			if p, ok := path.(string); ok && p != "" {
+				s.noSuidPaths = append(s.noSuidPaths, filepath.Clean(p))
+			}
 		}
 	}
 
@@ -136,6 +154,9 @@ func (s *SuidSweep) watchLoop(ctx context.Context, alertChan chan<- notifier.Ale
 // Any difference is saved as the pending baseline for the operator to review and
 // approve on the host with `fogbot baseline approve`.
 func (s *SuidSweep) check(alertChan chan<- notifier.Alert, reported map[string]string, initial bool) {
+	// Runs whether or not a baseline is approved: there is nothing to approve
+	s.checkNoSuid(alertChan)
+
 	current := s.sweep()
 
 	bl, err := s.baselineManager.LoadSuid()
@@ -218,6 +239,49 @@ func (s *SuidSweep) check(alertChan chan<- notifier.Alert, reported map[string]s
 	}
 }
 
+// checkNoSuid reports every SUID/SGID file under noSuidPaths, once per file
+// and content, until it is removed or loses the bit.
+func (s *SuidSweep) checkNoSuid(alertChan chan<- notifier.Alert) {
+	if s.flagged == nil {
+		s.flagged = make(map[string]string)
+	}
+	found := s.sweepNoSuid()
+
+	for path := range s.flagged {
+		if _, ok := found[path]; !ok {
+			delete(s.flagged, path)
+		}
+	}
+
+	paths := make([]string, 0, len(found))
+	for path := range found {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		entry := found[path]
+		if h, ok := s.flagged[path]; ok && h == entry.Hash {
+			continue
+		}
+		s.flagged[path] = entry.Hash
+		log.Printf("[suid-sweep] SUID/SGID file in a no-SUID path: %s", path)
+		alertChan <- notifier.Alert{
+			Severity:    notifier.SeverityContact,
+			SkillID:     SkillID,
+			SkillName:   SkillName,
+			Title:       "SUID/SGID File in No-SUID Path",
+			Size:        "1 file",
+			Activity:    fmt.Sprintf("SUID/SGID file where none should exist: %s", filepath.Base(path)),
+			Location:    path,
+			Unit:        fmt.Sprintf("uid=%d gid=%d mode=%s", entry.UID, entry.GID, os.FileMode(entry.Mode)),
+			Time:        time.Now(),
+			Equipment:   "not covered by baseline approval: remove the file or its SUID/SGID bit",
+			Acknowledge: true,
+		}
+	}
+}
+
 func (s *SuidSweep) savePending(current map[string]baseline.SuidEntry) error {
 	err := s.baselineManager.SavePendingSuid(&baseline.Baseline{
 		Type:      "suid",
@@ -230,50 +294,96 @@ func (s *SuidSweep) savePending(current map[string]baseline.SuidEntry) error {
 	return err
 }
 
-// sweep performs a filesystem walk looking for SUID/SGID binaries
+// under reports whether path is root or inside it
+func under(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
+// underAny reports whether path is any of roots or inside one
+func underAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if under(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// insideAnother reports whether path is inside one of roots other than itself
+func insideAnother(path string, roots []string) bool {
+	for _, root := range roots {
+		if root != path && under(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// sweep performs a filesystem walk of the watch paths looking for SUID/SGID
+// binaries. No-SUID paths are skipped: sweepNoSuid covers them.
 func (s *SuidSweep) sweep() map[string]baseline.SuidEntry {
 	results := make(map[string]baseline.SuidEntry)
-
 	for _, searchPath := range s.searchPaths {
-		filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				// Log permission/access errors so the operator knows the sweep is incomplete
-				log.Printf("[suid-sweep] Walk error at %s: %v", path, err)
-				return nil // continue walking other paths
-			}
-
-			if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
-				// This file has SUID or SGID set
-				stat, ok := info.Sys().(*syscall.Stat_t)
-				if !ok {
-					return nil
-				}
-
-				hash, _ := baseline.HashFile(path)
-
-				entry := baseline.SuidEntry{
-					Path:  path,
-					Mode:  uint32(info.Mode()),
-					UID:   int(stat.Uid),
-					GID:   int(stat.Gid),
-					Size:  info.Size(),
-					Hash:  hash,
-					MTime: info.ModTime(),
-				}
-
-				results[path] = entry
-			}
-
-			return nil
-		})
+		walkSuid(searchPath, s.noSuidPaths, results)
 	}
-
 	log.Printf("[suid-sweep] Found %d SUID/SGID binaries", len(results))
 	return results
 }
 
+// sweepNoSuid walks the no-SUID paths, each once even where they nest
+func (s *SuidSweep) sweepNoSuid() map[string]baseline.SuidEntry {
+	results := make(map[string]baseline.SuidEntry)
+	walked := make(map[string]bool)
+	for _, root := range s.noSuidPaths {
+		if walked[root] || insideAnother(root, s.noSuidPaths) {
+			continue
+		}
+		walked[root] = true
+		walkSuid(root, nil, results)
+	}
+	return results
+}
 
+// walkSuid records every SUID/SGID file under root into results, not
+// descending into skip
+func walkSuid(root string, skip []string, results map[string]baseline.SuidEntry) {
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// Log permission/access errors so the operator knows the sweep is incomplete
+			log.Printf("[suid-sweep] Walk error at %s: %v", path, err)
+			return nil // continue walking other paths
+		}
 
+		if info.IsDir() && underAny(path, skip) {
+			return filepath.SkipDir
+		}
+
+		if info.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+			// This file has SUID or SGID set
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok {
+				return nil
+			}
+
+			hash, _ := baseline.HashFile(path)
+
+			entry := baseline.SuidEntry{
+				Path:  path,
+				Mode:  uint32(info.Mode()),
+				UID:   int(stat.Uid),
+				GID:   int(stat.Gid),
+				Size:  info.Size(),
+				Hash:  hash,
+				MTime: info.ModTime(),
+			}
+
+			results[path] = entry
+		}
+
+		return nil
+	})
+}
 
 // DeduceCommands - stub for legacy skill
 func (s *SuidSweep) DeduceCommands(cfg map[string]interface{}) ([]skills.SystemCommand, error) {
