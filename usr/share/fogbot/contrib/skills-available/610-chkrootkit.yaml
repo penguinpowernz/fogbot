@@ -1,11 +1,12 @@
 id: 610
 name: chkrootkit
 description: >
-  Parses chkrootkit output for suspicious findings.
-  Gracefully skips if chkrootkit is not installed.
+  Reads chkrootkit's output after each daily scan and alerts on warnings
+  not in the previous scan and on every INFECTED result. Alerts if
+  chkrootkit stops scanning.
 why: >
-  chkrootkit provides complementary rootkit detection with different
-  heuristics than rkhunter. Worth leveraging if available.
+  chkrootkit looks for rootkits and malware with different checks from
+  rkhunter. Its findings are only useful if someone reads them.
 requires:
   - chkrootkit
 tags: [rootkit, scanner]
@@ -14,3 +15,7 @@ config:
   log_path: /var/log/chkrootkit/log.today
   alert_on_infected: true
   alert_on_suspicious: true
+  # Alert on every warning in every scan, not just new ones
+  repeat_warnings: false
+  # Alert if no scan finishes for this long ("off" to never)
+  max_scan_age: 48h

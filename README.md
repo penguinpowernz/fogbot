@@ -106,8 +106,8 @@ Configuration via environment variables:
 | 530 | fs-anomaly        | Filesystem integrity monitoring                      | ❌   |        |
 | 540 | dir-watch         | Watch directories for new files                      | ✅   |  ✅    |
 | 550 | systemd-watch     | Detect daemon-reload and unit changes via D-Bus      | ✅   |  ✅    |
-| 600 | rkhunter          | Rootkit detection wrapper                            | ❌   |        |
-| 610 | chkrootkit        | Rootkit detection wrapper                            | ❌   |        |
+| 600 | rkhunter          | rkhunter findings and stalled scans                  | ✅   |        |
+| 610 | chkrootkit        | chkrootkit findings and stalled scans                | ✅   |        |
 | 700 | kernel-mod        | Alert on kernel module loads                         | ❌   |        |
 | 710 | net-watch         | Monitor network connections                          | ❌   |        |
 | 715 | net-discover      | Detect new hosts on the LAN (passive)                | ❌   |        |

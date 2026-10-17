@@ -36,8 +36,8 @@ The files in this directory itself are the framework shared by all skills: the
 | 530 | [fs-anomaly](fsanomaly/README.md) | ld.so.preload, hidden files, immutable flags | planned |
 | 540 | [dir-watch](dirwatch/README.md) | New files in watched directories (auditd) | ✅ |
 | 550 | [systemd-watch](systemdwatch/README.md) | systemd reloads and unit file changes | ✅ |
-| 600 | [rkhunter](rkhunter/README.md) | rkhunter findings | planned |
-| 610 | [chkrootkit](chkrootkit/README.md) | chkrootkit findings | planned |
+| 600 | [rkhunter](rkhunter/README.md) | New rkhunter warnings, rootkits found, scans stopping | ✅ |
+| 610 | [chkrootkit](chkrootkit/README.md) | New chkrootkit warnings, INFECTED results, scans stopping | ✅ |
 | 700 | [kernel-mod](kernelmod/README.md) | Kernel module loads, security sysctl changes, LD_PRELOAD | planned |
 | 710 | [net-watch](netwatch/README.md) | Shells on the network, new listeners | planned |
 | 715 | [net-discover](netdiscover/README.md) | New hosts on the LAN | ✅ |

@@ -24,6 +24,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
+	"github.com/penguinpowernz/fogbot/internal/skills/chkrootkit"
 	"github.com/penguinpowernz/fogbot/internal/skills/cronwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
@@ -33,6 +34,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/netdiscover"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
+	"github.com/penguinpowernz/fogbot/internal/skills/rkhunter"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
 	"github.com/penguinpowernz/fogbot/internal/skills/suidsweep"
@@ -235,6 +237,8 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
 	registry.Register(netdiscover.New(baselineManager))
+	registry.Register(rkhunter.New())
+	registry.Register(chkrootkit.New())
 
 	// Log registered skills
 	log.Printf("Skill registry initialized with %d skills:", len(registry.All()))

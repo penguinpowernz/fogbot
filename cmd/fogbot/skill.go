@@ -12,6 +12,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
+	"github.com/penguinpowernz/fogbot/internal/skills/chkrootkit"
 	"github.com/penguinpowernz/fogbot/internal/skills/cronwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
@@ -20,6 +21,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/netdiscover"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
+	"github.com/penguinpowernz/fogbot/internal/skills/rkhunter"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
 	"github.com/penguinpowernz/fogbot/internal/skills/sshmonitor"
 	"github.com/penguinpowernz/fogbot/internal/skills/suidsweep"
@@ -289,6 +291,10 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 		return dirwatch.NewFromConfig(cfg)
 	case 550:
 		return systemdwatch.NewFromConfig(cfg)
+	case 600:
+		return rkhunter.NewFromConfig(cfg)
+	case 610:
+		return chkrootkit.NewFromConfig(cfg)
 	case 715:
 		return netdiscover.New(baselineManager())
 	// Add more skill implementations here as they're created
