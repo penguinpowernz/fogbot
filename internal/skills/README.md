@@ -32,7 +32,7 @@ The files in this directory itself are the framework shared by all skills: the
 | 420 | [auditd-health](auditdhealth/README.md) | DEADMAN: auditd stopping or not logging | ✅ |
 | 500 | [file-watch](filewatch/README.md) | Access to sensitive and canary files (auditd) | ✅ |
 | 510 | [port-tripwires](porttripwires/README.md) | Connections to tripwire ports (iptables) | ✅ |
-| 520 | [cron-watch](cronwatch/README.md) | New cron and at jobs | planned |
+| 520 | [cron-watch](cronwatch/README.md) | New or changed cron and at jobs | ✅ |
 | 530 | [fs-anomaly](fsanomaly/README.md) | ld.so.preload, hidden files, immutable flags | planned |
 | 540 | [dir-watch](dirwatch/README.md) | New files in watched directories (auditd) | ✅ |
 | 550 | [systemd-watch](systemdwatch/README.md) | systemd reloads and unit file changes | ✅ |

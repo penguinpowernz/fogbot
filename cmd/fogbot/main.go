@@ -24,6 +24,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/selfwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
+	"github.com/penguinpowernz/fogbot/internal/skills/cronwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
@@ -230,6 +231,7 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	registry.Register(auditdhealth.New())
 	registry.Register(filewatch.NewDefault())
 	registry.Register(porttripwires.NewDefault())
+	registry.Register(cronwatch.New())
 	registry.Register(dirwatch.New())
 	registry.Register(systemdwatch.New())
 	registry.Register(netdiscover.New(baselineManager))

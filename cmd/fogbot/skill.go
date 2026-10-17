@@ -12,6 +12,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/config"
 	"github.com/penguinpowernz/fogbot/internal/skills"
 	"github.com/penguinpowernz/fogbot/internal/skills/auditdhealth"
+	"github.com/penguinpowernz/fogbot/internal/skills/cronwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/dirwatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
@@ -282,6 +283,8 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 		return filewatch.New(cfg)
 	case 510:
 		return porttripwires.New(cfg)
+	case 520:
+		return cronwatch.NewFromConfig(cfg)
 	case 540:
 		return dirwatch.NewFromConfig(cfg)
 	case 550:

@@ -12,6 +12,11 @@ requires:
   - inotify
 tags: [persistence, cron, at]
 severity_default: red
+requires_approval: false  # inotify only, no system changes
+
+# Each path may be a file or a directory, and needn't exist yet: its
+# directory is watched so it is seen when it appears. Directories are watched
+# one level deep, as cron and atd only read that far.
 config:
   watch_paths:
     - /etc/crontab

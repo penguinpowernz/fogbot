@@ -7,6 +7,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/penguinpowernz/fogbot/internal/notifier"
+	"github.com/penguinpowernz/fogbot/internal/skills"
 	"golang.org/x/sys/unix"
 )
 
@@ -31,17 +32,17 @@ func TestDpkgRunning(t *testing.T) {
 	lock := filepath.Join(dir, "lock")
 	locks := []string{frontend, lock}
 
-	if dpkgRunning(locks) {
+	if skills.DpkgRunning(locks) {
 		t.Fatal("expected false when the lock files don't exist")
 	}
 	if err := os.WriteFile(lock, nil, 0640); err != nil {
 		t.Fatal(err)
 	}
-	if dpkgRunning(locks) {
+	if skills.DpkgRunning(locks) {
 		t.Fatal("expected false when the lock file exists but is unlocked")
 	}
 	holdLock(t, lock)
-	if !dpkgRunning(locks) {
+	if !skills.DpkgRunning(locks) {
 		t.Fatal("expected true while the lock is held")
 	}
 }

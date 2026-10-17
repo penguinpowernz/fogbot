@@ -15,9 +15,9 @@ It is the general-purpose fallback. Where a dedicated skill owns the job, use
 that instead: [file-watch](../filewatch/README.md) for specific sensitive files
 such as `~/.ssh/authorized_keys`, [suid-sweep](../suidsweep/README.md) for SUID
 binaries, [systemd-watch](../systemdwatch/README.md) for system units (though
-`/etc/systemd/system/` here catches unit files written without a reload). The
-default `/etc/cron.d/` covers cron while [cron-watch](../cronwatch/README.md)
-is still planned.
+`/etc/systemd/system/` here catches unit files written without a reload),
+[cron-watch](../cronwatch/README.md) for cron and at jobs. The default
+`/etc/cron.d/` here adds who wrote a cron job, which cron-watch can't say.
 
 ## How it works
 
