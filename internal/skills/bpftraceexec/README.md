@@ -3,14 +3,15 @@
 > **Planned.** This skill has no code yet, so `fogbot skill enable` refuses it.
 > This page describes the design.
 
-Uses bpftrace to watch how programs are started: shells spawned by servers,
+Uses bpftrace to watch how programs are started: shells spawned by services,
 interpreters run with inline code, `curl | sh` style droppers, and `ptrace`
 attaching to other processes.
 
 ## What it's for
 
-A web server or database starting a shell is what a successful remote exploit
-looks like from the inside. `python -c '...'` and `bash -c "$(curl ...)"` are
+A service listening on your workstation, such as the print service or a dev
+database left open to the LAN, starting a shell is what a successful remote
+exploit looks like from the inside. `python -c '...'` and `bash -c "$(curl ...)"` are
 how payloads run without a file. `ptrace` is how one process injects code into
 another. eBPF sees all of these in the kernel as they happen, with the parent
 process, which polling `/proc` can miss.
@@ -39,11 +40,13 @@ Set in `/etc/fogbot/skills-available/800-bpftrace-exec.yaml` (shipped from
 ```yaml
 config:
   suspicious_parent_child:
-    - parent: nginx
-      child: [bash, sh, dash]
-    - parent: apache2
+    - parent: cupsd
       child: [bash, sh, dash]
     - parent: postgres
+      child: [bash, sh, dash]
+    - parent: mysqld
+      child: [bash, sh, dash]
+    - parent: redis-server
       child: [bash, sh, dash]
   alert_interpreter_c_flag: true
   alert_curl_pipe_sh: true
@@ -59,17 +62,18 @@ config:
 
 ## Examples
 
-**Workstation services.** Servers on a workstation are things like a dev
-database or the print service. None of them should start a shell:
+**Only list what you run.** The shipped parents are the services a workstation
+typically has listening: the print service and dev databases. Drop the ones
+you don't run and add any other service you run natively, such as `mongod`.
+
+**Document viewers.** A malicious PDF or office document that gets code
+execution usually starts a shell. If your viewer never does that in normal
+use, add it:
 
 ```yaml
-config:
-  suspicious_parent_child:
-    - parent: mysqld
+    - parent: evince
       child: [bash, sh, dash]
-    - parent: redis-server
-      child: [bash, sh, dash]
-    - parent: cupsd
+    - parent: soffice.bin
       child: [bash, sh, dash]
 ```
 

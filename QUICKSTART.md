@@ -43,7 +43,7 @@ telegram:
   token: "YOUR_BOT_TOKEN_HERE"
   chat_id: 0  # Will be set automatically after auth
 
-host_label: "my-server"
+host_label: "dev-laptop"
 ```
 
 ## First Run
@@ -161,8 +161,8 @@ In dry-run mode:
 
 ## Alert Severity
 
-- 🔴 **CONTACT** - Immediate, single event (file modified, new SUID, shell from nginx)
-- 🟡 **MOVEMENT** - Rate-limited digest (SSH brute force, port scans)
+- 🔴 **CONTACT** - Immediate, single event (canary file read, new SUID, program run from /tmp)
+- 🟡 **MOVEMENT** - Rate-limited digest (package installs, failed sudo)
 - 🟢 **NOMINAL** - Lifecycle (startup, shutdown, baseline approvals)
 
 ## Common Commands
@@ -216,7 +216,7 @@ fogbot version
 1. **Phase 2**: Actual skill implementations (currently just skeleton)
 2. **Enable skills**: Start with low-impact ones (400-log-freshness, 410-service-health)
 3. **Tune alerts**: Adjust thresholds in skill YAML files
-4. **Deploy**: Use `ian build` to create .deb package for production
+4. **Install**: Use `ian build` to create a .deb package for your workstation
 
 ## Learn More
 

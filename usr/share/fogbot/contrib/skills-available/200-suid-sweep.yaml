@@ -7,7 +7,7 @@ description: >
 why: >
   SUID binaries run with elevated privileges. An attacker who can create
   or modify a SUID binary has a direct path to privilege escalation.
-  New SUID binaries appearing on a production system — especially outside
+  New SUID binaries appearing on a workstation — especially outside
   package manager control — are a critical indicator.
 requires:
   - auditd

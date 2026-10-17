@@ -5,11 +5,14 @@ never seen before, direct root logins, and failed `sudo`/`su` attempts.
 
 ## What it's for
 
-SSH is the usual way in to a Linux box. Failed logins on their own mean little,
-but a successful login from an address that has never connected before, a root
-login that skips the `sudo` audit trail, or someone guessing at the `sudo`
-password on a single-user workstation are all worth knowing about straight away.
-The SSH alerts only matter where `sshd` already runs for a real reason.
+Most workstations don't need `sshd`, but plenty of developers run it to get in
+from a laptop or another machine on the LAN, and then it is a way in for
+anyone else too. Failed logins on their own mean little, but a successful login
+from an address that has never connected before or a root login that skips the
+`sudo` audit trail is worth knowing about straight away. The SSH alerts only
+matter where `sshd` already runs for a real reason; the `sudo` and `su`
+alerts matter on every workstation, since on a single-user machine nobody but
+you should be typing that password.
 
 ## How it works
 

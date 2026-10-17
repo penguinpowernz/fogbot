@@ -72,21 +72,18 @@ config:
 | Key | Default | Meaning |
 |---|---|---|
 | `sweep_interval` | `1h` | Time between sweeps |
-| `watch_paths` | `/usr /bin /sbin /opt /home` | Directories walked, recursively |
+| `watch_paths` | `/usr /bin /sbin /opt /home` | Directories walked, recursively; symlinks are not followed |
 | `no_suid_paths` | none (shipped: `/home /root /tmp /var/tmp /dev/shm`) | Directories where any SUID/SGID file alerts; `[]` switches this off |
 | `max_hash_mb` | `200` | Largest file hashed, in MB; bigger ones are compared by size and mtime |
 | `alert_on_too_large` | `false` | Alert (CONTACT) for each SUID/SGID file over `max_hash_mb` |
 
 ## Examples
 
-**Sweep the places nothing should be SUID.** There is no legitimate reason for
-a SUID file in a home directory, `/tmp` or `/var/tmp`. Those are exactly where
-an attacker would leave a root shell. Only SUID/SGID files are hashed, so the
-cost is the directory walk; lengthen the interval if `/home` is very large:
-
-**More places nothing should be SUID.** The shipped `no_suid_paths` cover
-where an attacker would leave a root shell. Add other directories your users
-can write to, such as a data disk or a shared directory:
+**More places nothing should be SUID.** There is no legitimate reason for a
+SUID file in a home directory, `/tmp` or `/var/tmp`, which is why the shipped
+`no_suid_paths` cover them: they are exactly where an attacker would leave a
+root shell. Add any other place you can write to without root, such as a
+second data disk or where removable drives mount:
 
 ```yaml
 config:
@@ -102,8 +99,8 @@ config:
     - /tmp
     - /var/tmp
     - /dev/shm
-    - /srv/shared
     - /mnt/data
+    - /media
 ```
 
 A large `/home` makes every sweep longer; lengthen `sweep_interval` if it shows.

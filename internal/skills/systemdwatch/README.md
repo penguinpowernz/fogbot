@@ -5,10 +5,10 @@ or unit files are enabled, disabled or masked.
 
 ## What it's for
 
-A systemd service is the most common way to persist on a modern Linux box: drop
-a unit file in `/etc/systemd/system`, `daemon-reload`, enable it, done. Both
-steps show up as signals from systemd itself, so they can be seen as they
-happen rather than found later.
+A systemd service or timer is the most common way to persist on a modern Linux
+box: drop a unit file in `/etc/systemd/system`, `daemon-reload`, enable it,
+done. The reload and the enable show up as signals from systemd itself, so they
+can be seen as they happen rather than found later.
 
 ## How it works
 
@@ -18,8 +18,8 @@ the sender (any client could otherwise forge them):
 
 | Signal | Alert | Severity |
 |---|---|---|
-| `Reloading` (start of `systemctl daemon-reload`) | systemd daemon-reload | MOVEMENT |
-| `UnitFilesChanged` (enable, disable, mask, edit) | systemd unit files changed | MOVEMENT |
+| `Reloading` (start of a daemon-reload, including the one `systemctl edit` and `systemctl enable` do) | systemd daemon-reload | MOVEMENT |
+| `UnitFilesChanged` (`systemctl enable`, `disable`, `mask`, `unmask`, `preset`, `link`) | systemd unit files changed | MOVEMENT |
 
 Package maintainer scripts reload systemd and enable units on every upgrade
 that ships one. With `quiet_during_dpkg` on, signals that arrive while dpkg
@@ -59,12 +59,10 @@ you would rather see every reload than trust that.
 
 ## Examples
 
-**A reload you didn't cause.** With package runs filtered out, a daemon-reload
-you didn't run yourself deserves a look at
-**Correlate with package changes.** `apt` reloads systemd whenever a package
-ships a unit. A daemon-reload that arrives without a
-[pkg-monitor](../pkgmonitor/README.md) alert next to it, and without you
-running `systemctl`, deserves a look at
+**A reload you didn't cause.** With `quiet_during_dpkg` on, package runs are
+already filtered out (turn it off and `apt` reloads systemd whenever a package
+ships a unit; check for a [pkg-monitor](../pkgmonitor/README.md) alert next to
+it). A daemon-reload you didn't run yourself deserves a look at
 `systemctl list-unit-files --state=enabled` and `systemctl list-timers`.
 
 **User units aren't covered.** This listens to the system instance only.

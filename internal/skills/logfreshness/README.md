@@ -70,7 +70,8 @@ don't list it here.
 run rsyslog, so `/var/log/syslog` and `/var/log/auth.log` never exist and both
 alert as missing. Remove them from `watch_logs`.
 
-**Your own application.** Anything with a heartbeat log line works:
+**A local service of your own.** Anything you run that writes a heartbeat
+log line works:
 
 ```yaml
     - path: /var/log/myapp/app.log
