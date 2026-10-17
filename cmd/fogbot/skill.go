@@ -16,6 +16,7 @@ import (
 	"github.com/penguinpowernz/fogbot/internal/skills/filewatch"
 	"github.com/penguinpowernz/fogbot/internal/skills/logfreshness"
 	"github.com/penguinpowernz/fogbot/internal/skills/pkgmonitor"
+	"github.com/penguinpowernz/fogbot/internal/skills/netdiscover"
 	"github.com/penguinpowernz/fogbot/internal/skills/porttripwires"
 	"github.com/penguinpowernz/fogbot/internal/skills/procexec"
 	"github.com/penguinpowernz/fogbot/internal/skills/servicehealth"
@@ -285,6 +286,8 @@ func instantiateSkill(cfg skills.SkillConfig) skills.Skill {
 		return dirwatch.NewFromConfig(cfg)
 	case 550:
 		return systemdwatch.NewFromConfig(cfg)
+	case 715:
+		return netdiscover.New(baselineManager())
 	// Add more skill implementations here as they're created
 	default:
 		return nil

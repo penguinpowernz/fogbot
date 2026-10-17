@@ -40,7 +40,7 @@ The files in this directory itself are the framework shared by all skills: the
 | 610 | [chkrootkit](chkrootkit/README.md) | chkrootkit findings | planned |
 | 700 | [kernel-mod](kernelmod/README.md) | Kernel module loads, security sysctl changes, LD_PRELOAD | planned |
 | 710 | [net-watch](netwatch/README.md) | Shells on the network, new listeners | planned |
-| 715 | [net-discover](netdiscover/README.md) | New hosts on the LAN | planned |
+| 715 | [net-discover](netdiscover/README.md) | New hosts on the LAN | ✅ |
 | 800 | [bpftrace-exec](bpftraceexec/README.md) | Servers spawning shells, inline code, ptrace | planned |
 | 900 | [resource-anomaly](resourceanomaly/README.md) | Miners and bulk I/O | planned |
 
